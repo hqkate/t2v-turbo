@@ -1,4 +1,34 @@
+import math
 import numpy as np
+import mindspore as ms
+from mindspore import ops
+
+
+def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
+    """
+    Create sinusoidal timestep embeddings.
+    :param timesteps: a 1-D Tensor of N indices, one per batch element.
+                      These may be fractional.
+    :param dim: the dimension of the output.
+    :param max_period: controls the minimum frequency of the embeddings.
+    :return: an [N x dim] Tensor of positional embeddings.
+    """
+    if not repeat_only:
+        half = dim // 2
+        freqs = ops.exp(
+            -math.log(max_period)
+            * ops.arange(start=0, end=half, dtype=ms.float32)
+            / half
+        ).to(device=timesteps.device)
+        args = timesteps[:, None].float() * freqs[None]
+        embedding = ops.cat([ops.cos(args), ops.sin(args)], dim=-1)
+        if dim % 2:
+            embedding = ops.cat(
+                [embedding, ops.zeros_like(embedding[:, :1])], dim=-1
+            )
+    else:
+        embedding = repeat(timesteps, "b -> b d", d=dim)
+    return embedding
 
 
 def betas_for_alpha_bar(num_diffusion_timesteps, alpha_bar, max_beta=0.999):

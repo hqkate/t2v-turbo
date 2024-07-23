@@ -19,7 +19,7 @@ lora_args = dict(
     target_replace_module=[],
     target_module=[],
     r=4,
-    search_class=[nn.Linear],
+    search_class=[nn.Dense],
     dropout=0,
     lora_bias="none",
 )

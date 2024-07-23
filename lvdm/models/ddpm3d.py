@@ -17,7 +17,7 @@ mainlogger = logging.getLogger("mainlogger")
 import mindspore as ms
 from mindspore import nn, ops
 
-from torchvision.utils import make_grid
+# from torchvision.utils import make_grid
 from utils.utils import instantiate_from_config
 from lvdm.ema import LitEma
 from lvdm.distributions import DiagonalGaussianDistribution

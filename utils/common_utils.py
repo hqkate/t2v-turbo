@@ -1,6 +1,7 @@
 import ast
 import gc
 
+import numpy as np
 import mindspore as ms
 from mindspore import nn, ops
 
@@ -9,7 +10,7 @@ from collections import OrderedDict
 
 # from diffusers.models.attention_processor import AttnProcessor2_0
 # from diffusers.models.attention import BasicTransformerBlock
-import wandb
+# import wandb
 
 
 def extract_into_tensor(a, t, x_shape):
@@ -302,7 +303,6 @@ def huber_loss(pred, target, huber_c=0.001):
     return loss.mean()
 
 
-@torch.no_grad()
 def update_ema(target_params, source_params, rate=0.99):
     """
     Update target parameters to be closer to those of source parameters using
@@ -320,7 +320,7 @@ def log_validation_video(pipeline, args, accelerator, save_fps):
     if args.seed is None:
         generator = None
     else:
-        generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
+        generator = np.random.Generator(np.random.PCG64(args.seed))
 
     validation_prompts = [
         "An astronaut riding a horse.",

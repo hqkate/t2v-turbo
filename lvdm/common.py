@@ -93,9 +93,6 @@ def init_(tensor):
     return tensor
 
 
-ckpt = ms.utils.checkpoint.checkpoint
-
-
 def checkpoint(func, inputs, params, flag):
     """
     Evaluate a function without caching intermediate activations, allowing for
@@ -106,6 +103,7 @@ def checkpoint(func, inputs, params, flag):
                    explicitly take as arguments.
     :param flag: if False, disable gradient checkpointing.
     """
+    ckpt = ms.utils.checkpoint.checkpoint
     if flag:
         return ckpt(func, *inputs)
     else:

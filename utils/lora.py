@@ -706,7 +706,7 @@ def convert_loras_to_safeloras(
 
 def parse_safeloras(
     safeloras,
-) -> Dict[str, Tuple[List[ms.Parameter.Parameter], List[int], List[str]]]:
+) -> Dict[str, Tuple[List[ms.Parameter], List[int], List[str]]]:
     """
     Converts a loaded safetensor file that contains a set of module Loras
     into Parameters and other information
@@ -1200,7 +1200,6 @@ def patch_pipe(
     text_target_replace_module=TEXT_ENCODER_DEFAULT_TARGET_REPLACE,
 ):
     if maybe_unet_path.endswith(".pt"):
-        # torch format
 
         if maybe_unet_path.endswith(".ti.pt"):
             unet_path = maybe_unet_path[:-6] + ".pt"
@@ -1267,7 +1266,6 @@ def train_patch_pipe(pipe, patch_unet, patch_text):
         monkeypatch_remove_lora(pipe.text_encoder)
 
 
-@torch.no_grad()
 def inspect_lora(model):
     moved = {}
 
