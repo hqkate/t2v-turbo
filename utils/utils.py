@@ -2,9 +2,31 @@ import importlib
 import os
 import numpy as np
 import cv2
-
+from typing import List
 import mindspore as ms
 from mindspore import nn, ops
+
+
+def _get_subcell(mod: nn.Cell, target: str) -> "nn.Cell":
+    """See https://pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module.get_submodule"""
+    if target == "":
+        return mod
+
+    atoms: List[str] = target.split(".")
+    for item in atoms:
+        if not hasattr(mod, item):
+            raise AttributeError(f"{mod.__class__.__name__} has no attribute `{item}`")
+        mod = getattr(mod, item)
+        if not isinstance(mod, nn.Cell):
+            raise AttributeError(f"`{item}` is not an nn.Cell")
+    return mod
+
+
+def _get_submodules(model, key):
+    parent = _get_subcell(model, ".".join(key.split(".")[:-1]))
+    target_name = key.split(".")[-1]
+    target = _get_subcell(model, key)
+    return parent, target, target_name
 
 
 def count_params(model, verbose=False):

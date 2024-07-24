@@ -198,7 +198,7 @@ class DDPM(nn.Cell):
     @contextmanager
     def ema_scope(self, context=None):
         if self.use_ema:
-            self.model_ema.store(self.model.parameters())
+            self.model_ema.store(self.model.get_parameters())
             self.model_ema.copy_to(self.model)
             if context is not None:
                 mainlogger.info(f"{context}: Switched to EMA weights")
@@ -206,7 +206,7 @@ class DDPM(nn.Cell):
             yield None
         finally:
             if self.use_ema:
-                self.model_ema.restore(self.model.parameters())
+                self.model_ema.restore(self.model.get_parameters())
                 if context is not None:
                     mainlogger.info(f"{context}: Restored training weights")
 
@@ -501,22 +501,24 @@ class LatentDiffusion(DDPM):
             )
 
     def _freeze_model(self):
-        for name, para in self.model.diffusion_model.named_parameters():
+        for name, para in self.model.diffusion_model.parameters_dict():
             para.requires_grad = False
 
     def instantiate_first_stage(self, config):
         model = instantiate_from_config(config)
-        self.first_stage_model = model.eval()
+        model.set_train(False)
+        self.first_stage_model = model
         self.first_stage_model.train = disabled_train
-        for param in self.first_stage_model.parameters():
+        for param in self.first_stage_model.get_parameters():
             param.requires_grad = False
 
     def instantiate_cond_stage(self, config):
         if not self.cond_stage_trainable:
             model = instantiate_from_config(config)
-            self.cond_stage_model = model.eval()
+            model.set_train(False)
+            self.cond_stage_model = model
             self.cond_stage_model.train = disabled_train
-            for param in self.cond_stage_model.parameters():
+            for param in self.cond_stage_model.get_parameters():
                 param.requires_grad = False
         else:
             model = instantiate_from_config(config)
@@ -828,7 +830,7 @@ class LatentVisualDiffusion(LatentDiffusion):
         if freeze:
             self.embedder = embedder.eval()
             self.embedder.train = disabled_train
-            for param in self.embedder.parameters():
+            for param in self.embedder.get_parameters():
                 param.requires_grad = False
 
     def init_projector(

@@ -69,7 +69,7 @@ model:
           attn_resolutions: []
           dropout: 0.0
         lossconfig:
-          target: nn.Identity
+          target: mindspore.nn.Identity
     cond_stage_config:
       target: lvdm.modules.encoders.condition.FrozenOpenCLIPEmbedder
       params:

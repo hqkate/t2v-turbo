@@ -6,7 +6,7 @@ from mindspore import context
 # GRAPH_MODE 0
 # PYNATIVE_MODE 1
 
-context.set_context(mode=0, device_target="CPU", device_id=1)
+context.set_context(mode=1, device_target="CPU", device_id=1)
 
 __dir__ = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.abspath(os.path.join(__dir__, "..")))
@@ -19,11 +19,11 @@ from omegaconf import OmegaConf
 
 
 MODEL_URL = "https://weights.replicate.delivery/default/Ji4chenLi/t2v-turbo.tar"
-MODEL_CACHE = "model_cache"
+MODEL_CACHE = "checkpoints"
 
 
 base_model_dir = os.path.join(MODEL_CACHE, "VideoCrafter2_model.ckpt")
-unet_dir = os.path.join(MODEL_CACHE, "unet_lora.pt")
+unet_dir = os.path.join(MODEL_CACHE, "lora_np.pkl")
 
 config = OmegaConf.load("configs/inference_t2v_512_v2.0.yaml")
 model_config = config.pop("model", OmegaConf.create())

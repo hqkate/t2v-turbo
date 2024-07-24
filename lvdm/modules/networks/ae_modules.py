@@ -3,18 +3,19 @@ import math
 import numpy as np
 import mindspore as ms
 from mindspore import nn, ops
-from einops import rearrange
+
 from utils.utils import instantiate_from_config
+from lvdm.distributions import DiagonalGaussianDistribution
 from lvdm.modules.attention import LinearAttention
 
 
 def nonlinearity(x):
     # swish
-    return x * torch.sigmoid(x)
+    return x * ops.sigmoid(x)
 
 
 def Normalize(in_channels, num_groups=32):
-    return torch.nn.GroupNorm(
+    return nn.GroupNorm(
         num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True
     )
 
@@ -26,26 +27,26 @@ class LinAttnBlock(LinearAttention):
         super().__init__(dim=in_channels, heads=1, dim_head=in_channels)
 
 
-class AttnBlock(nn.Module):
+class AttnBlock(nn.Cell):
     def __init__(self, in_channels):
         super().__init__()
         self.in_channels = in_channels
 
         self.norm = Normalize(in_channels)
-        self.q = torch.nn.Conv2d(
+        self.q = nn.Conv2d(
             in_channels, in_channels, kernel_size=1, stride=1, padding=0
         )
-        self.k = torch.nn.Conv2d(
+        self.k = nn.Conv2d(
             in_channels, in_channels, kernel_size=1, stride=1, padding=0
         )
-        self.v = torch.nn.Conv2d(
+        self.v = nn.Conv2d(
             in_channels, in_channels, kernel_size=1, stride=1, padding=0
         )
-        self.proj_out = torch.nn.Conv2d(
+        self.proj_out = nn.Conv2d(
             in_channels, in_channels, kernel_size=1, stride=1, padding=0
         )
 
-    def forward(self, x):
+    def construct(self, x):
         h_ = x
         h_ = self.norm(h_)
         q = self.q(h_)
@@ -58,14 +59,14 @@ class AttnBlock(nn.Module):
         q = q.permute(0, 2, 1)  # bcl -> blc l=hw
         k = k.reshape(b, c, h * w)  # bcl
 
-        w_ = torch.bmm(q, k)  # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
+        w_ = ops.bmm(q, k)  # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
         w_ = w_ * (int(c) ** (-0.5))
-        w_ = torch.nn.functional.softmax(w_, dim=2)
+        w_ = ops.softmax(w_, dim=2)
 
         # attend to values
         v = v.reshape(b, c, h * w)
         w_ = w_.permute(0, 2, 1)  # b,hw,hw (first hw of k, second of q)
-        h_ = torch.bmm(v, w_)  # b, c,hw (hw of q) h_[b,c,j] = sum_i v[b,c,i] w_[b,i,j]
+        h_ = ops.bmm(v, w_)  # b, c,hw (hw of q) h_[b,c,j] = sum_i v[b,c,i] w_[b,i,j]
         h_ = h_.reshape(b, c, h, w)
 
         h_ = self.proj_out(h_)
@@ -84,39 +85,39 @@ def make_attn(in_channels, attn_type="vanilla"):
         return LinAttnBlock(in_channels)
 
 
-class Downsample(nn.Module):
+class Downsample(nn.Cell):
     def __init__(self, in_channels, with_conv):
         super().__init__()
         self.with_conv = with_conv
         self.in_channels = in_channels
         if self.with_conv:
             # no asymmetric padding in torch conv, must do it ourselves
-            self.conv = torch.nn.Conv2d(
+            self.conv = nn.Conv2d(
                 in_channels, in_channels, kernel_size=3, stride=2, padding=0
             )
 
-    def forward(self, x):
+    def construct(self, x):
         if self.with_conv:
             pad = (0, 1, 0, 1)
-            x = torch.nn.functional.pad(x, pad, mode="constant", value=0)
+            x = ops.pad(x, pad, mode="constant", value=0)
             x = self.conv(x)
         else:
-            x = torch.nn.functional.avg_pool2d(x, kernel_size=2, stride=2)
+            x = ops.avg_pool2d(x, kernel_size=2, stride=2)
         return x
 
 
-class Upsample(nn.Module):
+class Upsample(nn.Cell):
     def __init__(self, in_channels, with_conv):
         super().__init__()
         self.with_conv = with_conv
         self.in_channels = in_channels
         if self.with_conv:
-            self.conv = torch.nn.Conv2d(
-                in_channels, in_channels, kernel_size=3, stride=1, padding=1
+            self.conv = nn.Conv2d(
+                in_channels, in_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
             )
 
-    def forward(self, x):
-        x = torch.nn.functional.interpolate(x, scale_factor=2.0, mode="nearest")
+    def construct(self, x):
+        x = ops.interpolate(x, scale_factor=2.0, mode="nearest")
         if self.with_conv:
             x = self.conv(x)
         return x
@@ -134,16 +135,16 @@ def get_timestep_embedding(timesteps, embedding_dim):
 
     half_dim = embedding_dim // 2
     emb = math.log(10000) / (half_dim - 1)
-    emb = torch.exp(torch.arange(half_dim, dtype=torch.float32) * -emb)
+    emb = ops.exp(ops.arange(half_dim, dtype=ms.float32) * -emb)
     emb = emb.to(device=timesteps.device)
     emb = timesteps.float()[:, None] * emb[None, :]
-    emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=1)
+    emb = ops.cat([ops.sin(emb), ops.cos(emb)], axis=1)
     if embedding_dim % 2 == 1:  # zero pad
-        emb = torch.nn.functional.pad(emb, (0, 1, 0, 0))
+        emb = ops.pad(emb, (0, 1, 0, 0))
     return emb
 
 
-class ResnetBlock(nn.Module):
+class ResnetBlock(nn.Cell):
     def __init__(
         self,
         *,
@@ -160,27 +161,27 @@ class ResnetBlock(nn.Module):
         self.use_conv_shortcut = conv_shortcut
 
         self.norm1 = Normalize(in_channels)
-        self.conv1 = torch.nn.Conv2d(
-            in_channels, out_channels, kernel_size=3, stride=1, padding=1
+        self.conv1 = nn.Conv2d(
+            in_channels, out_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
         )
         if temb_channels > 0:
-            self.temb_proj = torch.nn.Linear(temb_channels, out_channels)
+            self.temb_proj = nn.Dense(temb_channels, out_channels)
         self.norm2 = Normalize(out_channels)
-        self.dropout = torch.nn.Dropout(dropout)
-        self.conv2 = torch.nn.Conv2d(
-            out_channels, out_channels, kernel_size=3, stride=1, padding=1
+        self.dropout = nn.Dropout(p=dropout)
+        self.conv2 = nn.Conv2d(
+            out_channels, out_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
         )
         if self.in_channels != self.out_channels:
             if self.use_conv_shortcut:
-                self.conv_shortcut = torch.nn.Conv2d(
-                    in_channels, out_channels, kernel_size=3, stride=1, padding=1
+                self.conv_shortcut = nn.Conv2d(
+                    in_channels, out_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
                 )
             else:
-                self.nin_shortcut = torch.nn.Conv2d(
+                self.nin_shortcut = nn.Conv2d(
                     in_channels, out_channels, kernel_size=1, stride=1, padding=0
                 )
 
-    def forward(self, x, temb):
+    def construct(self, x, temb):
         h = x
         h = self.norm1(h)
         h = nonlinearity(h)
@@ -203,7 +204,7 @@ class ResnetBlock(nn.Module):
         return x + h
 
 
-class Model(nn.Module):
+class Model(nn.Cell):
     def __init__(
         self,
         *,
@@ -233,25 +234,24 @@ class Model(nn.Module):
         self.use_timestep = use_timestep
         if self.use_timestep:
             # timestep embedding
-            self.temb = nn.Module()
-            self.temb.dense = nn.ModuleList(
+            self.temb = nn.CellList(
                 [
-                    torch.nn.Linear(self.ch, self.temb_ch),
-                    torch.nn.Linear(self.temb_ch, self.temb_ch),
+                    nn.Dense(self.ch, self.temb_ch),
+                    nn.Dense(self.temb_ch, self.temb_ch),
                 ]
             )
 
         # downsampling
-        self.conv_in = torch.nn.Conv2d(
-            in_channels, self.ch, kernel_size=3, stride=1, padding=1
+        self.conv_in = nn.Conv2d(
+            in_channels, self.ch, kernel_size=3, stride=1, padding=1, pad_mode="pad"
         )
 
         curr_res = resolution
         in_ch_mult = (1,) + tuple(ch_mult)
-        self.down = nn.ModuleList()
+        self.down = nn.CellList()
         for i_level in range(self.num_resolutions):
-            block = nn.ModuleList()
-            attn = nn.ModuleList()
+            block = nn.CellList()
+            attn = nn.CellList()
             block_in = ch * in_ch_mult[i_level]
             block_out = ch * ch_mult[i_level]
             for i_block in range(self.num_res_blocks):
@@ -266,7 +266,7 @@ class Model(nn.Module):
                 block_in = block_out
                 if curr_res in attn_resolutions:
                     attn.append(make_attn(block_in, attn_type=attn_type))
-            down = nn.Module()
+            down = nn.Cell()
             down.block = block
             down.attn = attn
             if i_level != self.num_resolutions - 1:
@@ -275,7 +275,7 @@ class Model(nn.Module):
             self.down.append(down)
 
         # middle
-        self.mid = nn.Module()
+        self.mid = nn.Cell()
         self.mid.block_1 = ResnetBlock(
             in_channels=block_in,
             out_channels=block_in,
@@ -291,10 +291,10 @@ class Model(nn.Module):
         )
 
         # upsampling
-        self.up = nn.ModuleList()
+        self.up = nn.CellList()
         for i_level in reversed(range(self.num_resolutions)):
-            block = nn.ModuleList()
-            attn = nn.ModuleList()
+            block = nn.CellList()
+            attn = nn.CellList()
             block_out = ch * ch_mult[i_level]
             skip_in = ch * ch_mult[i_level]
             for i_block in range(self.num_res_blocks + 1):
@@ -311,7 +311,7 @@ class Model(nn.Module):
                 block_in = block_out
                 if curr_res in attn_resolutions:
                     attn.append(make_attn(block_in, attn_type=attn_type))
-            up = nn.Module()
+            up = nn.Cell()
             up.block = block
             up.attn = attn
             if i_level != 0:
@@ -321,22 +321,22 @@ class Model(nn.Module):
 
         # end
         self.norm_out = Normalize(block_in)
-        self.conv_out = torch.nn.Conv2d(
-            block_in, out_ch, kernel_size=3, stride=1, padding=1
+        self.conv_out = nn.Conv2d(
+            block_in, out_ch, kernel_size=3, stride=1, padding=1, pad_mode="pad"
         )
 
-    def forward(self, x, t=None, context=None):
+    def construct(self, x, t=None, context=None):
         # assert x.shape[2] == x.shape[3] == self.resolution
         if context is not None:
             # assume aligned context, cat along channel axis
-            x = torch.cat((x, context), dim=1)
+            x = ops.cat((x, context), axis=1)
         if self.use_timestep:
             # timestep embedding
             assert t is not None
             temb = get_timestep_embedding(t, self.ch)
-            temb = self.temb.dense[0](temb)
+            temb = self.temb[0](temb)
             temb = nonlinearity(temb)
-            temb = self.temb.dense[1](temb)
+            temb = self.temb[1](temb)
         else:
             temb = None
 
@@ -361,7 +361,7 @@ class Model(nn.Module):
         for i_level in reversed(range(self.num_resolutions)):
             for i_block in range(self.num_res_blocks + 1):
                 h = self.up[i_level].block[i_block](
-                    torch.cat([h, hs.pop()], dim=1), temb
+                    ops.cat([h, hs.pop()], dim=1), temb
                 )
                 if len(self.up[i_level].attn) > 0:
                     h = self.up[i_level].attn[i_block](h)
@@ -378,7 +378,7 @@ class Model(nn.Module):
         return self.conv_out.weight
 
 
-class Encoder(nn.Module):
+class Encoder(nn.Cell):
     def __init__(
         self,
         *,
@@ -408,17 +408,17 @@ class Encoder(nn.Module):
         self.in_channels = in_channels
 
         # downsampling
-        self.conv_in = torch.nn.Conv2d(
-            in_channels, self.ch, kernel_size=3, stride=1, padding=1
+        self.conv_in = nn.Conv2d(
+            in_channels, self.ch, kernel_size=3, stride=1, padding=1, pad_mode="pad"
         )
 
         curr_res = resolution
         in_ch_mult = (1,) + tuple(ch_mult)
         self.in_ch_mult = in_ch_mult
-        self.down = nn.ModuleList()
+        self.down = nn.CellList()
         for i_level in range(self.num_resolutions):
-            block = nn.ModuleList()
-            attn = nn.ModuleList()
+            block = nn.CellList()
+            attn = nn.CellList()
             block_in = ch * in_ch_mult[i_level]
             block_out = ch * ch_mult[i_level]
             for i_block in range(self.num_res_blocks):
@@ -433,7 +433,7 @@ class Encoder(nn.Module):
                 block_in = block_out
                 if curr_res in attn_resolutions:
                     attn.append(make_attn(block_in, attn_type=attn_type))
-            down = nn.Module()
+            down = nn.Cell()
             down.block = block
             down.attn = attn
             if i_level != self.num_resolutions - 1:
@@ -442,7 +442,7 @@ class Encoder(nn.Module):
             self.down.append(down)
 
         # middle
-        self.mid = nn.Module()
+        self.mid = nn.Cell()
         self.mid.block_1 = ResnetBlock(
             in_channels=block_in,
             out_channels=block_in,
@@ -459,15 +459,16 @@ class Encoder(nn.Module):
 
         # end
         self.norm_out = Normalize(block_in)
-        self.conv_out = torch.nn.Conv2d(
+        self.conv_out = nn.Conv2d(
             block_in,
             2 * z_channels if double_z else z_channels,
             kernel_size=3,
             stride=1,
             padding=1,
+            pad_mode="pad",
         )
 
-    def forward(self, x):
+    def construct(self, x):
         # timestep embedding
         temb = None
 
@@ -503,7 +504,7 @@ class Encoder(nn.Module):
         return h
 
 
-class Decoder(nn.Module):
+class Decoder(nn.Cell):
     def __init__(
         self,
         *,
@@ -547,12 +548,12 @@ class Decoder(nn.Module):
         )
 
         # z to block_in
-        self.conv_in = torch.nn.Conv2d(
-            z_channels, block_in, kernel_size=3, stride=1, padding=1
+        self.conv_in = nn.Conv2d(
+            z_channels, block_in, kernel_size=3, stride=1, padding=1, pad_mode="pad"
         )
 
         # middle
-        self.mid = nn.Module()
+        self.mid = nn.Cell()
         self.mid.block_1 = ResnetBlock(
             in_channels=block_in,
             out_channels=block_in,
@@ -568,10 +569,10 @@ class Decoder(nn.Module):
         )
 
         # upsampling
-        self.up = nn.ModuleList()
+        self.up = nn.CellList()
         for i_level in reversed(range(self.num_resolutions)):
-            block = nn.ModuleList()
-            attn = nn.ModuleList()
+            block = nn.CellList()
+            attn = nn.CellList()
             block_out = ch * ch_mult[i_level]
             for i_block in range(self.num_res_blocks + 1):
                 block.append(
@@ -585,7 +586,7 @@ class Decoder(nn.Module):
                 block_in = block_out
                 if curr_res in attn_resolutions:
                     attn.append(make_attn(block_in, attn_type=attn_type))
-            up = nn.Module()
+            up = nn.Cell()
             up.block = block
             up.attn = attn
             if i_level != 0:
@@ -595,11 +596,11 @@ class Decoder(nn.Module):
 
         # end
         self.norm_out = Normalize(block_in)
-        self.conv_out = torch.nn.Conv2d(
-            block_in, out_ch, kernel_size=3, stride=1, padding=1
+        self.conv_out = nn.Conv2d(
+            block_in, out_ch, kernel_size=3, stride=1, padding=1, pad_mode="pad"
         )
 
-    def forward(self, z):
+    def construct(self, z):
         # assert z.shape[1:] == self.z_shape[1:]
         self.last_z_shape = z.shape
 
@@ -637,14 +638,14 @@ class Decoder(nn.Module):
         h = self.conv_out(h)
         # print(f'decoder-conv_out feat={h.shape}')
         if self.tanh_out:
-            h = torch.tanh(h)
+            h = ops.tanh(h)
         return h
 
 
-class SimpleDecoder(nn.Module):
+class SimpleDecoder(nn.Cell):
     def __init__(self, in_channels, out_channels, *args, **kwargs):
         super().__init__()
-        self.model = nn.ModuleList(
+        self.model = nn.CellList(
             [
                 nn.Conv2d(in_channels, in_channels, 1),
                 ResnetBlock(
@@ -671,11 +672,11 @@ class SimpleDecoder(nn.Module):
         )
         # end
         self.norm_out = Normalize(in_channels)
-        self.conv_out = torch.nn.Conv2d(
-            in_channels, out_channels, kernel_size=3, stride=1, padding=1
+        self.conv_out = nn.Conv2d(
+            in_channels, out_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
         )
 
-    def forward(self, x):
+    def construct(self, x):
         for i, layer in enumerate(self.model):
             if i in [1, 2, 3]:
                 x = layer(x, None)
@@ -688,7 +689,7 @@ class SimpleDecoder(nn.Module):
         return x
 
 
-class UpsampleDecoder(nn.Module):
+class UpsampleDecoder(nn.Cell):
     def __init__(
         self,
         in_channels,
@@ -706,8 +707,8 @@ class UpsampleDecoder(nn.Module):
         self.num_res_blocks = num_res_blocks
         block_in = in_channels
         curr_res = resolution // 2 ** (self.num_resolutions - 1)
-        self.res_blocks = nn.ModuleList()
-        self.upsample_blocks = nn.ModuleList()
+        self.res_blocks = nn.CellList()
+        self.upsample_blocks = nn.CellList()
         for i_level in range(self.num_resolutions):
             res_block = []
             block_out = ch * ch_mult[i_level]
@@ -721,18 +722,18 @@ class UpsampleDecoder(nn.Module):
                     )
                 )
                 block_in = block_out
-            self.res_blocks.append(nn.ModuleList(res_block))
+            self.res_blocks.append(nn.CellList(res_block))
             if i_level != self.num_resolutions - 1:
                 self.upsample_blocks.append(Upsample(block_in, True))
                 curr_res = curr_res * 2
 
         # end
         self.norm_out = Normalize(block_in)
-        self.conv_out = torch.nn.Conv2d(
-            block_in, out_channels, kernel_size=3, stride=1, padding=1
+        self.conv_out = nn.Conv2d(
+            block_in, out_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
         )
 
-    def forward(self, x):
+    def construct(self, x):
         # upsampling
         h = x
         for k, i_level in enumerate(range(self.num_resolutions)):
@@ -746,15 +747,15 @@ class UpsampleDecoder(nn.Module):
         return h
 
 
-class LatentRescaler(nn.Module):
+class LatentRescaler(nn.Cell):
     def __init__(self, factor, in_channels, mid_channels, out_channels, depth=2):
         super().__init__()
         # residual block, interpolate, residual block
         self.factor = factor
         self.conv_in = nn.Conv2d(
-            in_channels, mid_channels, kernel_size=3, stride=1, padding=1
+            in_channels, mid_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
         )
-        self.res_block1 = nn.ModuleList(
+        self.res_block1 = nn.CellList(
             [
                 ResnetBlock(
                     in_channels=mid_channels,
@@ -766,7 +767,7 @@ class LatentRescaler(nn.Module):
             ]
         )
         self.attn = AttnBlock(mid_channels)
-        self.res_block2 = nn.ModuleList(
+        self.res_block2 = nn.CellList(
             [
                 ResnetBlock(
                     in_channels=mid_channels,
@@ -784,11 +785,11 @@ class LatentRescaler(nn.Module):
             kernel_size=1,
         )
 
-    def forward(self, x):
+    def construct(self, x):
         x = self.conv_in(x)
         for block in self.res_block1:
             x = block(x, None)
-        x = torch.nn.functional.interpolate(
+        x = ops.interpolate(
             x,
             size=(
                 int(round(x.shape[2] * self.factor)),
@@ -802,7 +803,7 @@ class LatentRescaler(nn.Module):
         return x
 
 
-class MergedRescaleEncoder(nn.Module):
+class MergedRescaleEncoder(nn.Cell):
     def __init__(
         self,
         in_channels,
@@ -840,13 +841,13 @@ class MergedRescaleEncoder(nn.Module):
             depth=rescale_module_depth,
         )
 
-    def forward(self, x):
+    def construct(self, x):
         x = self.encoder(x)
         x = self.rescaler(x)
         return x
 
 
-class MergedRescaleDecoder(nn.Module):
+class MergedRescaleDecoder(nn.Cell):
     def __init__(
         self,
         z_channels,
@@ -883,13 +884,13 @@ class MergedRescaleDecoder(nn.Module):
             depth=rescale_module_depth,
         )
 
-    def forward(self, x):
+    def construct(self, x):
         x = self.rescaler(x)
         x = self.decoder(x)
         return x
 
 
-class Upsampler(nn.Module):
+class Upsampler(nn.Cell):
     def __init__(self, in_size, out_size, in_channels, out_channels, ch_mult=2):
         super().__init__()
         assert out_size >= in_size
@@ -915,13 +916,13 @@ class Upsampler(nn.Module):
             ch_mult=[ch_mult for _ in range(num_blocks)],
         )
 
-    def forward(self, x):
+    def construct(self, x):
         x = self.rescaler(x)
         x = self.decoder(x)
         return x
 
 
-class Resize(nn.Module):
+class Resize(nn.Cell):
     def __init__(self, in_channels=None, learned=False, mode="bilinear"):
         super().__init__()
         self.with_conv = learned
@@ -933,27 +934,27 @@ class Resize(nn.Module):
             raise NotImplementedError()
             assert in_channels is not None
             # no asymmetric padding in torch conv, must do it ourselves
-            self.conv = torch.nn.Conv2d(
-                in_channels, in_channels, kernel_size=4, stride=2, padding=1
+            self.conv = nn.Conv2d(
+                in_channels, in_channels, kernel_size=4, stride=2, padding=1, pad_mode="pad"
             )
 
-    def forward(self, x, scale_factor=1.0):
+    def construct(self, x, scale_factor=1.0):
         if scale_factor == 1.0:
             return x
         else:
-            x = torch.nn.functional.interpolate(
+            x = ops.interpolate(
                 x, mode=self.mode, align_corners=False, scale_factor=scale_factor
             )
         return x
 
 
-class FirstStagePostProcessor(nn.Module):
+class FirstStagePostProcessor(nn.Cell):
 
     def __init__(
         self,
         ch_mult: list,
         in_channels,
-        pretrained_model: nn.Module = None,
+        pretrained_model: nn.Cell = None,
         reshape=False,
         n_channels=None,
         dropout=0.0,
@@ -978,7 +979,7 @@ class FirstStagePostProcessor(nn.Module):
 
         self.proj_norm = Normalize(in_channels, num_groups=in_channels // 2)
         self.proj = nn.Conv2d(
-            in_channels, n_channels, kernel_size=3, stride=1, padding=1
+            in_channels, n_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
         )
 
         blocks = []
@@ -993,24 +994,23 @@ class FirstStagePostProcessor(nn.Module):
             ch_in = m * n_channels
             downs.append(Downsample(ch_in, with_conv=False))
 
-        self.model = nn.ModuleList(blocks)
-        self.downsampler = nn.ModuleList(downs)
+        self.model = nn.CellList(blocks)
+        self.downsampler = nn.CellList(downs)
 
     def instantiate_pretrained(self, config):
         model = instantiate_from_config(config)
         self.pretrained_model = model.eval()
         # self.pretrained_model.train = False
-        for param in self.pretrained_model.parameters():
+        for param in self.pretrained_model.get_parameters():
             param.requires_grad = False
 
-    @torch.no_grad()
     def encode_with_pretrained(self, x):
         c = self.pretrained_model.encode(x)
         if isinstance(c, DiagonalGaussianDistribution):
             c = c.mode()
         return c
 
-    def forward(self, x):
+    def construct(self, x):
         z_fs = self.encode_with_pretrained(x)
         z = self.proj_norm(z_fs)
         z = self.proj(z)
@@ -1021,5 +1021,7 @@ class FirstStagePostProcessor(nn.Module):
             z = downmodel(z)
 
         if self.do_reshape:
-            z = rearrange(z, "b c h w -> b (h w) c")
+            b, c, h, w = z.shape
+            z = z.reshape(b, -1, c)
+            # z = rearrange(z, "b c h w -> b (h w) c")
         return z

@@ -258,9 +258,13 @@ class ResBlock(TimestepBlock):
         h = self.skip_connection(x) + h
 
         if self.use_temporal_conv and batch_size:
-            h = rearrange(h, "(b t) c h w -> b c t h w", b=batch_size)
+            _, c, h, w = h.shape
+            h = h.reshape(batch_size, c, -1, h, w)
+            # h = rearrange(h, "(b t) c h w -> b c t h w", b=batch_size)
             h = self.temopral_conv(h)
-            h = rearrange(h, "b c t h w -> (b t) c h w")
+            b, c, t, h, w = x.shape
+            h = h.reshape(-1, c, h, w)
+            # h = rearrange(h, "b c t h w -> (b t) c h w")
         return h
 
 
@@ -694,7 +698,9 @@ class UNetModel(nn.Cell):
         emb = emb.repeat_interleave(repeats=t, dim=0)
 
         ## always in shape (b t) c h w, except for temporal layer
-        x = rearrange(x, "b c t h w -> (b t) c h w")
+        b, c, t, h, w = x.shape
+        x = x.reshape(-1, c, h, w)
+        # x = rearrange(x, "b c t h w -> (b t) c h w")
 
         h = x.type(self.dtype)
         adapter_idx = 0
@@ -719,5 +725,7 @@ class UNetModel(nn.Cell):
         y = self.out(h)
 
         # reshape back to (b c t h w)
-        y = rearrange(y, "(b t) c h w -> b c t h w", b=b)
+        _, c, h, w = y.shape
+        y = y.reshape(b, c, -1, h, w)
+        # y = rearrange(y, "(b t) c h w -> b c t h w", b=b)
         return y

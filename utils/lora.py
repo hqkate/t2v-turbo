@@ -1,5 +1,6 @@
 import json
 import math
+import pickle
 from itertools import groupby
 import os
 from typing import Callable, Dict, List, Optional, Set, Tuple, Type, Union
@@ -9,11 +10,25 @@ import PIL
 
 import mindspore as ms
 from mindspore import nn, ops
+import mindspore.common.initializer as init
 
+from .utils import _get_submodules
 from mindone.safetensors.mindspore import load_file as safe_open
 from mindone.safetensors.mindspore import save_file as safe_save
 
 safetensors_available = True
+
+
+def load_lora_from_pkl(file_path, to_param=False):
+    with open(file_path, "rb") as file:
+        lora = pickle.load(file)
+
+    lora = [ms.Tensor(w) for w in lora]
+
+    if to_param:
+        lora = [ms.Parameter(tensor) for tensor in lora]
+
+    return lora
 
 
 class LoraInjectedLinear(nn.Cell):
@@ -32,15 +47,24 @@ class LoraInjectedLinear(nn.Cell):
             r = min(in_features, out_features)
 
         self.r = r
-        self.linear = nn.Dense(in_features, out_features, bias)
+        self.linear = nn.Dense(in_features, out_features, has_bias=has_bias)
         self.lora_down = nn.Dense(in_features, r, has_bias=False)
-        self.dropout = nn.Dropout(dropout_p)
+        self.dropout = nn.Dropout(p=dropout_p)
         self.lora_up = nn.Dense(r, out_features, has_bias=False)
         self.scale = scale
         self.selector = nn.Identity()
 
-        nn.init.normal_(self.lora_down.weight, std=1 / r)
-        nn.init.zeros_(self.lora_up.weight)
+        # nn.init.normal_(self.lora_down.weight, std=1 / r)
+        # nn.init.zeros_(self.lora_up.weight)
+
+        self.lora_down.weight.set_data(
+            init.initializer(
+                init.Normal(sigma=1.0 / self.r), self.lora_down.weight.shape, self.lora_down.weight.dtype
+            )
+        )
+        self.lora_up.weight.set_data(
+            init.initializer(init.Zero(), self.lora_up.weight.shape, self.lora_up.weight.dtype)
+        )
 
     def construct(self, input):
         return (
@@ -69,7 +93,7 @@ class LoraInjectedConv2d(nn.Cell):
         stride=1,
         padding=0,
         dilation=1,
-        groups: int = 1,
+        group: int = 1,
         bias: bool = True,
         r: int = 4,
         dropout_p: float = 0.1,
@@ -83,14 +107,17 @@ class LoraInjectedConv2d(nn.Cell):
             r = min(in_channels, out_channels)
 
         self.r = r
+
+        pad_mode= "pad" if padding > 0 else "same"
         self.conv = nn.Conv2d(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
             stride=stride,
             padding=padding,
+            pad_mode=pad_mode,
             dilation=dilation,
-            groups=groups,
+            group=group,
             has_bias=bias,
         )
 
@@ -100,11 +127,12 @@ class LoraInjectedConv2d(nn.Cell):
             kernel_size=kernel_size,
             stride=stride,
             padding=padding,
+            pad_mode=pad_mode,
             dilation=dilation,
-            groups=groups,
+            group=group,
             has_bias=False,
         )
-        self.dropout = nn.Dropout(dropout_p)
+        self.dropout = nn.Dropout(p=dropout_p)
         self.lora_up = nn.Conv2d(
             in_channels=r,
             out_channels=out_channels,
@@ -183,6 +211,7 @@ class LoraInjectedConv3d(nn.Cell):
             out_channels=out_channels,
             kernel_size=kernel_size,
             padding=padding,
+            pad_mode="pad",
         )
 
         self.lora_down = nn.Conv3d(
@@ -191,8 +220,9 @@ class LoraInjectedConv3d(nn.Cell):
             kernel_size=kernel_size,
             has_bias=False,
             padding=padding,
+            pad_mode="pad",
         )
-        self.dropout = nn.Dropout(dropout_p)
+        self.dropout = nn.Dropout(p=dropout_p)
         self.lora_up = nn.Conv3d(
             in_channels=r,
             out_channels=out_channels,
@@ -265,8 +295,8 @@ def _find_children(
     names they are referenced by.
     """
     # For each target find every linear_class module that isn't a child of a LoraInjectedLinear
-    for parent in model.modules():
-        for name, module in parent.named_children():
+    for parent in model.cells():
+        for name, module in parent.name_cells():
             if any([isinstance(module, _class) for _class in search_class]):
                 yield parent, name, module
 
@@ -291,11 +321,14 @@ def _find_modules_v2(
 
     # Get the targets we should replace all linears under
     if ancestor_class is not None:
-        ancestors = (
-            cell
-            for cell in model.cells()
-            if cell.__class__.__name__ in ancestor_class
-        )
+        if model.__class__.__name__ in ancestor_class:
+            ancestors = [model]
+        else:
+            ancestors = (
+                cell
+                for cell in model.cells()
+                if cell.__class__.__name__ in ancestor_class
+            )
     else:
         # this, incase you want to naively iterate over all modules.
         ancestors = [cell for cell in model.cells()]
@@ -308,7 +341,7 @@ def _find_modules_v2(
                 *path, name = fullname.split(".")
                 parent = ancestor
                 while path:
-                    parent = parent.get_submodule(path.pop(0))
+                    parent = _get_submodules(parent, path.pop(0))[1]
                 # Skip this linear if it's a child of a LoraInjectedLinear
                 if exclude_children_of and any(
                     [isinstance(parent, _class) for _class in exclude_children_of]
@@ -316,23 +349,6 @@ def _find_modules_v2(
                     continue
                 # Otherwise, yield it
                 yield parent, name, cell
-
-
-def _find_modules_old(
-    model,
-    ancestor_class: Set[str] = DEFAULT_TARGET_REPLACE,
-    search_class: List[Type[nn.Cell]] = [nn.Dense],
-    exclude_children_of: Optional[List[Type[nn.Cell]]] = [LoraInjectedLinear],
-):
-    ret = []
-    for _module in model.cells():
-        if _module.__class__.__name__ in ancestor_class:
-
-            for name, _child_module in _module.cells_and_names():
-                if _child_module.__class__ in search_class:
-                    ret.append((_module, name, _child_module))
-    print(ret)
-    return ret
 
 
 _find_modules = _find_modules_v2
@@ -355,7 +371,7 @@ def inject_trainable_lora(
     names = []
 
     if loras != None:
-        loras = ms.load_checkpoint(loras)
+        loras = load_lora_from_pkl(loras, to_param=True)
 
     for _module, name, _child_module in _find_modules(
         model, target_replace_module, search_class=[nn.Dense]
@@ -378,18 +394,18 @@ def inject_trainable_lora(
             _tmp.linear.bias = bias
 
         # switch the module
-        _tmp.to(_child_module.weight.dtype)
-        _module._modules[name] = _tmp
+        _tmp.to_float(_child_module.weight.dtype)
+        _module._cells[name] = _tmp
 
-        require_grad_params.append(_module._modules[name].lora_up.get_parameters())
-        require_grad_params.append(_module._modules[name].lora_down.get_parameters())
+        require_grad_params.append(_module._cells[name].lora_up.get_parameters())
+        require_grad_params.append(_module._cells[name].lora_down.get_parameters())
 
         if loras != None:
-            _module._modules[name].lora_up.weight = loras.pop(0)
-            _module._modules[name].lora_down.weight = loras.pop(0)
+            _module._cells[name].lora_up.weight = loras.pop(0)
+            _module._cells[name].lora_down.weight = loras.pop(0)
 
-        _module._modules[name].lora_up.weight.requires_grad = True
-        _module._modules[name].lora_down.weight.requires_grad = True
+        _module._cells[name].lora_up.weight.requires_grad = True
+        _module._cells[name].lora_down.weight.requires_grad = True
         names.append(name)
 
     return require_grad_params, names
@@ -409,7 +425,7 @@ def inject_trainable_lora_extended(
     names = []
 
     if loras != None:
-        loras = ms.load_checkpoint(loras)
+        loras = load_lora_from_pkl(loras)
 
     for _module, name, _child_module in _find_modules(
         model, target_replace_module, search_class=[nn.Dense, nn.Conv2d, nn.Conv3d]
@@ -418,8 +434,8 @@ def inject_trainable_lora_extended(
             weight = _child_module.weight
             bias = _child_module.bias
             _tmp = LoraInjectedLinear(
-                _child_module.in_features,
-                _child_module.out_features,
+                _child_module.in_channels,
+                _child_module.out_channels,
                 _child_module.bias is not None,
                 r=r,
             )
@@ -436,7 +452,7 @@ def inject_trainable_lora_extended(
                 _child_module.stride,
                 _child_module.padding,
                 _child_module.dilation,
-                _child_module.groups,
+                _child_module.group,
                 _child_module.bias is not None,
                 r=r,
             )
@@ -466,32 +482,32 @@ def inject_trainable_lora_extended(
             # zeroscope_v2_576w model, which has <class 'diffusers.models.lora.LoRACompatibleLinear'> and <class 'diffusers.models.lora.LoRACompatibleConv'>
             continue
         # switch the module
-        _tmp.to(_child_module.weight.dtype)
+        _tmp.to_float(_child_module.weight.dtype)
         if bias is not None:
-            _tmp.to(_child_module.bias.dtype)
+            _tmp.to_float(_child_module.bias.dtype)
 
-        _module._modules[name] = _tmp
-        require_grad_params.append(_module._modules[name].lora_up.get_parameters())
-        require_grad_params.append(_module._modules[name].lora_down.get_parameters())
+        _module._cells[name] = _tmp
+        require_grad_params.append(_module._cells[name].lora_up.get_parameters())
+        require_grad_params.append(_module._cells[name].lora_down.get_parameters())
 
         if loras != None:
             param = loras.pop(0)
             if isinstance(param, ms.Tensor):
-                _module._modules[name].lora_up.weight = ms.Parameter(param)
+                _module._cells[name].lora_up.weight = ms.Parameter(param)
             else:
-                _module._modules[name].lora_up.weight = param
+                _module._cells[name].lora_up.weight = param
 
             param = loras.pop(0)
             if isinstance(param, ms.Tensor):
-                _module._modules[name].lora_down.weight = ms.Parameter(param)
+                _module._cells[name].lora_down.weight = ms.Parameter(param)
             else:
-                _module._modules[name].lora_down.weight = param
+                _module._cells[name].lora_down.weight = param
 
-            # _module._modules[name].lora_up.weight = loras.pop(0)
-            # _module._modules[name].lora_down.weight = loras.pop(0)
+            # _module._cells[name].lora_up.weight = loras.pop(0)
+            # _module._cells[name].lora_down.weight = loras.pop(0)
 
-        _module._modules[name].lora_up.weight.requires_grad = True
-        _module._modules[name].lora_down.weight.requires_grad = True
+        _module._cells[name].lora_up.weight.requires_grad = True
+        _module._cells[name].lora_down.weight.requires_grad = True
         names.append(name)
 
     return require_grad_params, names
@@ -505,8 +521,8 @@ def inject_inferable_lora(
     is_extended=False,
     r=16,
 ):
-    from transformers.models.clip import CLIPTextModel
-    from diffusers import UNet3DConditionModel
+    from mindone.transformers import CLIPTextModel
+    from mindone.diffusers import UNet3DConditionModel
 
     def is_text_model(f):
         return "text_encoder" in f and isinstance(model.text_encoder, CLIPTextModel)
@@ -523,7 +539,7 @@ def inject_inferable_lora(
                     if is_text_model(f):
                         monkeypatch_or_replace_lora(
                             model.text_encoder,
-                            ms.load_checkpoint(lora_file),
+                            load_lora_from_pkl(lora_file),
                             target_replace_module=text_encoder_replace_modules,
                             r=r,
                         )
@@ -533,7 +549,7 @@ def inject_inferable_lora(
                     if is_unet(f):
                         monkeypatch_or_replace_lora_extended(
                             model.unet,
-                            ms.load_checkpoint(lora_file),
+                            load_lora_from_pkl(lora_file),
                             target_replace_module=unet_replace_modules,
                             r=r,
                         )
@@ -579,8 +595,8 @@ def extract_lora_as_tensor(
     ):
         up, down = _child_module.realize_as_lora()
         if as_fp16:
-            up = up.to(ms.float16)
-            down = down.to(ms.float16)
+            up = up.to_float(ms.float16)
+            down = down.to_float(ms.float16)
 
         loras.append((up, down))
 
@@ -678,7 +694,7 @@ def convert_loras_to_safeloras_with_embeds(
     for name, (path, target_replace_module, r) in modelmap.items():
         metadata[name] = json.dumps(list(target_replace_module))
 
-        lora = ms.load_checkpoint(path)
+        lora = load_lora_from_pkl(path, to_param=True)
         for i, weight in enumerate(lora):
             is_up = i % 2 == 0
             i = i // 2
@@ -868,19 +884,19 @@ def monkeypatch_or_replace_lora(
             _tmp.linear.bias = bias
 
         # switch the module
-        _module._modules[name] = _tmp
+        _module._cells[name] = _tmp
 
         up_weight = loras.pop(0)
         down_weight = loras.pop(0)
 
-        _module._modules[name].lora_up.weight = ms.Parameter(
+        _module._cells[name].lora_up.weight = ms.Parameter(
             up_weight.type(weight.dtype)
         )
-        _module._modules[name].lora_down.weight = ms.Parameter(
+        _module._cells[name].lora_down.weight = ms.Parameter(
             down_weight.type(weight.dtype)
         )
 
-        _module._modules[name]
+        _module._cells[name]
 
 
 def monkeypatch_or_replace_lora_extended(
@@ -947,7 +963,7 @@ def monkeypatch_or_replace_lora_extended(
                 _source.stride,
                 _source.padding,
                 _source.dilation,
-                _source.groups,
+                _source.group,
                 _source.bias is not None,
                 r=r.pop(0) if isinstance(r, list) else r,
             )
@@ -991,19 +1007,19 @@ def monkeypatch_or_replace_lora_extended(
             # zeroscope_v2_576w model, which has <class 'diffusers.models.lora.LoRACompatibleLinear'> and <class 'diffusers.models.lora.LoRACompatibleConv'>
             continue
         # switch the module
-        _module._modules[name] = _tmp
+        _module._cells[name] = _tmp
 
         up_weight = loras.pop(0)
         down_weight = loras.pop(0)
 
-        _module._modules[name].lora_up.weight = ms.Parameter(
+        _module._cells[name].lora_up.weight = ms.Parameter(
             up_weight.type(weight.dtype)
         )
-        _module._modules[name].lora_down.weight = ms.Parameter(
+        _module._cells[name].lora_down.weight = ms.Parameter(
             down_weight.type(weight.dtype)
         )
 
-        _module._modules[name]
+        _module._cells[name]
 
 
 def monkeypatch_or_replace_safeloras(models, safeloras):
@@ -1046,8 +1062,9 @@ def monkeypatch_remove_lora(model):
                     kernel_size=_source.kernel_size,
                     stride=_source.stride,
                     padding=_source.padding,
+                    pad_mode=_source.pad_mode,
                     dilation=_source.dilation,
-                    groups=_source.groups,
+                    group=_source.group,
                     has_bias=bias is not None,
                 )
 
@@ -1062,13 +1079,14 @@ def monkeypatch_remove_lora(model):
                     has_bias=_source.bias is not None,
                     kernel_size=_source.kernel_size,
                     padding=_source.padding,
+                    pad_mode=_source.pad_mode,
                 )
 
             _tmp.weight = weight
             if bias is not None:
                 _tmp.bias = bias
 
-        _module._modules[name] = _tmp
+        _module._cells[name] = _tmp
 
 
 def monkeypatch_add_lora(
@@ -1086,16 +1104,16 @@ def monkeypatch_add_lora(
         up_weight = loras.pop(0)
         down_weight = loras.pop(0)
 
-        _module._modules[name].lora_up.weight = ms.Parameter(
+        _module._cells[name].lora_up.weight = ms.Parameter(
             up_weight.type(weight.dtype) * alpha
-            + _module._modules[name].lora_up.weight * beta
+            + _module._cells[name].lora_up.weight * beta
         )
-        _module._modules[name].lora_down.weight = ms.Parameter(
+        _module._cells[name].lora_down.weight = ms.Parameter(
             down_weight.type(weight.dtype) * alpha
-            + _module._modules[name].lora_down.weight * beta
+            + _module._cells[name].lora_down.weight * beta
         )
 
-        _module._modules[name]
+        _module._cells[name]
 
 
 def tune_lora_scale(model, alpha: float = 1.0):
@@ -1215,7 +1233,7 @@ def patch_pipe(
             print("LoRA : Patching Unet")
             monkeypatch_or_replace_lora(
                 pipe.unet,
-                ms.load_checkpoint(unet_path),
+                load_lora_from_pkl(unet_path),
                 r=r,
                 target_replace_module=unet_target_replace_module,
             )

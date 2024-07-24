@@ -3,8 +3,6 @@ from contextlib import contextmanager
 import mindspore as ms
 from mindspore import nn, ops
 import numpy as np
-from einops import rearrange
-import nn.functional as F
 
 from lvdm.modules.networks.ae_modules import Encoder, Decoder
 from lvdm.distributions import DiagonalGaussianDistribution
@@ -42,7 +40,7 @@ class AutoencoderKL(nn.Cell):
         self.logdir = logdir
         if colorize_nlabels is not None:
             assert type(colorize_nlabels) == int
-            self.register_buffer("colorize", torch.randn(3, colorize_nlabels, 1, 1))
+            self.colorize = ops.randn(3, colorize_nlabels, 1, 1)
         if monitor is not None:
             self.monitor = monitor
         if ckpt_path is not None:
@@ -85,7 +83,7 @@ class AutoencoderKL(nn.Cell):
         self.save_decode_samples = 2048
 
     def init_from_ckpt(self, path, ignore_keys=list()):
-        sd = torch.load(path, map_location="cpu")
+        sd = ms.load_checkpoint(path)
         try:
             self._cur_epoch = sd["epoch"]
             sd = sd["state_dict"]
@@ -97,8 +95,7 @@ class AutoencoderKL(nn.Cell):
                 if k.startswith(ik):
                     print("Deleting key {} from state_dict.".format(k))
                     del sd[k]
-        self.load_state_dict(sd, strict=False)
-        # self.load_state_dict(sd, strict=True)
+        param_not_load, _ = ms.load_param_into_net(self, sd)
         print(f"Restored from {path}")
 
     def encode(self, x, **kwargs):
@@ -113,7 +110,7 @@ class AutoencoderKL(nn.Cell):
         dec = self.decoder(z)
         return dec
 
-    def forward(self, input, sample_posterior=True):
+    def construct(self, input, sample_posterior=True):
         posterior = self.encode(input)
         if sample_posterior:
             z = posterior.sample()
@@ -128,7 +125,9 @@ class AutoencoderKL(nn.Cell):
             b, c, t, h, w = x.shape
             self.b = b
             self.t = t
-            x = rearrange(x, "b c t h w -> (b t) c h w")
+            b, c, t, h, w = x.shape
+            x = x.reshape(-1, c, h, w)
+            # x = rearrange(x, "b c t h w -> (b t) c h w")
 
         return x
 
@@ -215,27 +214,25 @@ class AutoencoderKL(nn.Cell):
 
     def configure_optimizers(self):
         lr = self.learning_rate
-        opt_ae = torch.optim.Adam(
-            list(self.encoder.parameters())
-            + list(self.decoder.parameters())
-            + list(self.quant_conv.parameters())
-            + list(self.post_quant_conv.parameters()),
+        opt_ae = nn.optim.Adam(
+            list(self.encoder.get_parameters())
+            + list(self.decoder.get_parameters())
+            + list(self.quant_conv.get_parameters())
+            + list(self.post_quant_conv.get_parameters()),
             lr=lr,
             betas=(0.5, 0.9),
         )
-        opt_disc = torch.optim.Adam(
-            self.loss.discriminator.parameters(), lr=lr, betas=(0.5, 0.9)
+        opt_disc = nn.optim.Adam(
+            self.loss.discriminator.get_parameters(), lr=lr, betas=(0.5, 0.9)
         )
         return [opt_ae, opt_disc], []
 
     def get_last_layer(self):
         return self.decoder.conv_out.weight
 
-    @torch.no_grad()
     def log_images(self, batch, only_inputs=False, **kwargs):
         log = dict()
         x = self.get_input(batch, self.image_key)
-        x = x.to(self.device)
         if not only_inputs:
             xrec, posterior = self(x)
             if x.shape[1] > 3:
@@ -243,7 +240,7 @@ class AutoencoderKL(nn.Cell):
                 assert xrec.shape[1] > 3
                 x = self.to_rgb(x)
                 xrec = self.to_rgb(xrec)
-            log["samples"] = self.decode(torch.randn_like(posterior.sample()))
+            log["samples"] = self.decode(ops.randn_like(posterior.sample()))
             log["reconstructions"] = xrec
         log["inputs"] = x
         return log
@@ -251,8 +248,8 @@ class AutoencoderKL(nn.Cell):
     def to_rgb(self, x):
         assert self.image_key == "segmentation"
         if not hasattr(self, "colorize"):
-            self.register_buffer("colorize", torch.randn(3, x.shape[1], 1, 1).to(x))
-        x = F.conv2d(x, weight=self.colorize)
+            self.colorize = ops.randn(3, x.shape[1], 1, 1).to(x.dtype)
+        x = ops.conv2d(x, weight=self.colorize)
         x = 2.0 * (x - x.min()) / (x.max() - x.min()) - 1.0
         return x
 
@@ -273,5 +270,5 @@ class IdentityFirstStage(nn.Cell):
             return x, None, [None, None, None]
         return x
 
-    def forward(self, x, *args, **kwargs):
+    def construct(self, x, *args, **kwargs):
         return x
