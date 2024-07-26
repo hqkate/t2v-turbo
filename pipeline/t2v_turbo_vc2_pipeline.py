@@ -11,7 +11,8 @@ from mindone.diffusers.utils.mindspore_utils import randn_tensor
 from lvdm.models.ddpm3d import LatentDiffusion
 from scheduler.t2v_turbo_scheduler import T2VTurboScheduler
 
-logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+logger = logging.getLogger(__name__)
 
 
 class T2VTurboVC2Pipeline(DiffusionPipeline):
@@ -126,7 +127,7 @@ class T2VTurboVC2Pipeline(DiffusionPipeline):
         fps: int = 16,
         guidance_scale: float = 7.5,
         num_videos_per_prompt: Optional[int] = 1,
-        generator: Optional[Union[np.Generator, List[np.Generator]]] = None,
+        generator: Optional[Union[np.random.Generator, List[np.random.Generator]]] = None,
         latents: Optional[ms.Tensor] = None,
         num_inference_steps: int = 4,
         lcm_origin_steps: int = 50,

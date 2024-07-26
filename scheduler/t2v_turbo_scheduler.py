@@ -23,9 +23,9 @@ import numpy as np
 import mindspore as ms
 from mindspore import nn, ops
 
-from diffusers import ConfigMixin, SchedulerMixin
-from diffusers.configuration_utils import register_to_config
-from diffusers.utils import BaseOutput
+from mindone.diffusers import ConfigMixin, SchedulerMixin
+from mindone.diffusers.configuration_utils import register_to_config
+from mindone.diffusers.utils import BaseOutput
 
 
 def extract_into_tensor(a, t, x_shape):
@@ -213,7 +213,6 @@ class T2VTurboScheduler(SchedulerMixin, ConfigMixin):
                     linear_start**0.5,
                     linear_end**0.5,
                     num_train_timesteps,
-                    dtype=ms.float32,
                 )
                 ** 2
             )
@@ -305,7 +304,7 @@ class T2VTurboScheduler(SchedulerMixin, ConfigMixin):
 
         abs_sample = sample.abs()  # "a certain percentile absolute pixel value"
 
-        s = torch.quantile(abs_sample, self.config.dynamic_thresholding_ratio, dim=1)
+        s = ops.quantile(abs_sample, self.config.dynamic_thresholding_ratio, dim=1)
         s = ops.clamp(
             s, min=1, max=self.config.sample_max_value
         )  # When clamped to min=1, equivalent to standard clipping to [-1, 1]
@@ -488,15 +487,14 @@ class T2VTurboScheduler(SchedulerMixin, ConfigMixin):
     # Copied from diffusers.schedulers.scheduling_ddpm.DDPMScheduler.get_velocity
     def get_velocity(
         self,
-        sample: torch.FloatTensor,
-        noise: torch.FloatTensor,
-        timesteps: torch.IntTensor,
-    ) -> torch.FloatTensor:
+        sample: ms.Tensor,
+        noise: ms.Tensor,
+        timesteps: ms.Tensor,
+    ) -> ms.Tensor:
         # Make sure alphas_cumprod and timestep have same device and dtype as sample
         alphas_cumprod = self.alphas_cumprod.to(
-            device=sample.device, dtype=sample.dtype
+            dtype=sample.dtype
         )
-        timesteps = timesteps.to(sample.device)
 
         sqrt_alpha_prod = alphas_cumprod[timesteps] ** 0.5
         sqrt_alpha_prod = sqrt_alpha_prod.flatten()

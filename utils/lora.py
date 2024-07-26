@@ -20,15 +20,19 @@ safetensors_available = True
 
 
 def load_lora_from_pkl(file_path, to_param=False):
-    with open(file_path, "rb") as file:
-        lora = pickle.load(file)
+    # with open(file_path, "rb") as file:
+    #     lora = pickle.load(file)
 
-    lora = [ms.Tensor(w) for w in lora]
+    # lora = [ms.Tensor(w) for w in lora]
 
-    if to_param:
-        lora = [ms.Parameter(tensor) for tensor in lora]
+    # if to_param:
+    #     lora = [ms.Parameter(tensor) for tensor in lora]
 
-    return lora
+    import torch
+    loras = torch.load(file_path)
+    loras = [ms.Tensor(weight.detach().numpy()) for weight in loras]
+
+    return loras
 
 
 class LoraInjectedLinear(nn.Cell):
@@ -382,8 +386,8 @@ def inject_trainable_lora(
             print("LoRA Injection : injecting lora into ", name)
             print("LoRA Injection : weight shape", weight.shape)
         _tmp = LoraInjectedLinear(
-            _child_module.in_features,
-            _child_module.out_features,
+            _child_module.in_channels,
+            _child_module.out_channels,
             _child_module.bias is not None,
             r=r,
             dropout_p=dropout_p,
@@ -424,12 +428,15 @@ def inject_trainable_lora_extended(
     require_grad_params = []
     names = []
 
+    # target_replace_module = [getattr(model, m) for m in target_replace_module]
+
     if loras != None:
         loras = load_lora_from_pkl(loras)
 
     for _module, name, _child_module in _find_modules(
         model, target_replace_module, search_class=[nn.Dense, nn.Conv2d, nn.Conv3d]
     ):
+
         if _child_module.__class__ == nn.Dense:
             weight = _child_module.weight
             bias = _child_module.bias
@@ -873,8 +880,8 @@ def monkeypatch_or_replace_lora(
         weight = _source.weight
         bias = _source.bias
         _tmp = LoraInjectedLinear(
-            _source.in_features,
-            _source.out_features,
+            _source.in_channels,
+            _source.out_channels,
             _source.bias is not None,
             r=r.pop(0) if isinstance(r, list) else r,
         )
@@ -933,8 +940,8 @@ def monkeypatch_or_replace_lora_extended(
             weight = _source.weight
             bias = _source.bias
             _tmp = LoraInjectedLinear(
-                _source.in_features,
-                _source.out_features,
+                _source.in_channels,
+                _source.out_channels,
                 _source.bias is not None,
                 r=r.pop(0) if isinstance(r, list) else r,
             )
@@ -1044,7 +1051,7 @@ def monkeypatch_remove_lora(model):
             weight, bias = _source.weight, _source.bias
 
             _tmp = nn.Dense(
-                _source.in_features, _source.out_features, bias is not None
+                _source.in_channels, _source.out_channels, bias is not None
             )
 
             _tmp.weight = weight

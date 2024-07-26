@@ -77,7 +77,8 @@ class Downsample(nn.Cell):
                 3,
                 stride=stride,
                 padding=padding,
-                pad_mode="pad" if padding>0 else "same"
+                pad_mode="pad" if padding>0 else "same",
+                has_bias=True
             )
         else:
             assert self.channels == self.out_channels
@@ -106,7 +107,7 @@ class Upsample(nn.Cell):
         if use_conv:
             pad_mode = "pad" if padding > 0 else "same"
             self.conv = conv_nd(
-                dims, self.channels, self.out_channels, 3, padding=padding, pad_mode=pad_mode
+                dims, self.channels, self.out_channels, 3, padding=padding, pad_mode=pad_mode, has_bias=True
             )
 
     def construct(self, x):
@@ -165,7 +166,7 @@ class ResBlock(TimestepBlock):
         self.in_layers = nn.SequentialCell(
             normalization(channels),
             nn.SiLU(),
-            conv_nd(dims, channels, self.out_channels, 3, padding=1, pad_mode="pad"),
+            conv_nd(dims, channels, self.out_channels, 3, padding=1, pad_mode="pad", has_bias=True),
         )
 
         self.updown = up or down
@@ -190,17 +191,17 @@ class ResBlock(TimestepBlock):
             normalization(self.out_channels),
             nn.SiLU(),
             nn.Dropout(p=dropout),
-            zero_module(nn.Conv2d(self.out_channels, self.out_channels, 3, padding=1, pad_mode="pad")),
+            zero_module(nn.Conv2d(self.out_channels, self.out_channels, 3, padding=1, pad_mode="pad", has_bias=True)),
         )
 
         if self.out_channels == channels:
             self.skip_connection = nn.Identity()
         elif use_conv:
             self.skip_connection = conv_nd(
-                dims, channels, self.out_channels, 3, padding=1, pad_mode="pad"
+                dims, channels, self.out_channels, 3, padding=1, pad_mode="pad", has_bias=True
             )
         else:
-            self.skip_connection = conv_nd(dims, channels, self.out_channels, 1)
+            self.skip_connection = conv_nd(dims, channels, self.out_channels, 1, has_bias=True)
 
         if self.use_temporal_conv:
             self.temopral_conv = TemporalConvBlock(
@@ -432,13 +433,14 @@ class UNetModel(nn.Cell):
         else:
             self.time_cond_proj = None
 
-        self.input_blocks = nn.CellList(
+        input_blocks = nn.CellList(
             [
                 TimestepEmbedSequential(
-                    conv_nd(dims, in_channels, model_channels, 3, padding=1, pad_mode="pad")
+                    conv_nd(dims, in_channels, model_channels, 3, padding=1, pad_mode="pad", has_bias=True)
                 )
             ]
         )
+        self.input_blocks = input_blocks
         if self.addition_attention:
             self.init_attn = TimestepEmbedSequential(
                 TemporalTransformer(
@@ -593,7 +595,7 @@ class UNetModel(nn.Cell):
         )
         self.middle_block = TimestepEmbedSequential(*layers)
 
-        self.output_blocks = nn.CellList([])
+        output_blocks = nn.CellList([])
         for level, mult in list(enumerate(channel_mult))[::-1]:
             for i in range(num_res_blocks + 1):
                 ich = input_block_chans.pop()
@@ -663,12 +665,14 @@ class UNetModel(nn.Cell):
                         else Upsample(ch, conv_resample, dims=dims, out_channels=out_ch)
                     )
                     ds //= 2
-                self.output_blocks.append(TimestepEmbedSequential(*layers))
+                output_blocks.append(TimestepEmbedSequential(*layers))
+
+        self.output_blocks = output_blocks
 
         self.out = nn.SequentialCell(
             normalization(ch),
             nn.SiLU(),
-            zero_module(conv_nd(dims, model_channels, out_channels, 3, padding=1, pad_mode="pad")),
+            zero_module(conv_nd(dims, model_channels, out_channels, 3, padding=1, pad_mode="pad", has_bias=True)),
         )
 
     def construct(

@@ -27,7 +27,9 @@ def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
                 [embedding, ops.zeros_like(embedding[:, :1])], dim=-1
             )
     else:
-        embedding = repeat(timesteps, "b -> b d", d=dim)
+        timesteps = timesteps.unsqueeze(1)
+        embedding = timesteps.repeat(dim, 1)
+        # embedding = repeat(timesteps, "b -> b d", d=dim)
     return embedding
 
 

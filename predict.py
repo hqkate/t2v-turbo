@@ -10,7 +10,6 @@ import logging
 import numpy as np
 
 from omegaconf import OmegaConf
-from cog import BasePredictor, Input, Path
 
 import mindspore as ms
 from mindspore import nn, ops
@@ -32,7 +31,7 @@ from pipeline.t2v_turbo_vc2_pipeline import T2VTurboVC2Pipeline
 
 logger = logging.getLogger(__name__)
 MODEL_URL = "https://weights.replicate.delivery/default/Ji4chenLi/t2v-turbo.tar"
-MODEL_CACHE = "model_cache"
+MODEL_CACHE = "checkpoints"
 
 
 def download_weights(url, dest):
@@ -136,8 +135,8 @@ def main(args):
 
     # 2. model initiate and weight loading
 
-    if not os.path.exists(MODEL_CACHE):
-        download_weights(MODEL_URL, MODEL_CACHE)
+    # if not os.path.exists(MODEL_CACHE):
+    #     download_weights(MODEL_URL, MODEL_CACHE)
 
     base_model_dir = os.path.join(MODEL_CACHE, "VideoCrafter2_model.ckpt")
     unet_dir = os.path.join(MODEL_CACHE, "unet_lora.pt")
@@ -145,13 +144,13 @@ def main(args):
     config = OmegaConf.load(args.config)
     model_config = config.pop("model", OmegaConf.create())
     pretrained_t2v = instantiate_from_config(model_config)
-    pretrained_t2v = load_model_checkpoint(pretrained_t2v, base_model_dir)
+    # pretrained_t2v = load_model_checkpoint(pretrained_t2v, base_model_dir)
 
     unet_config = model_config["params"]["unet_config"]
     unet_config["params"]["time_cond_proj_dim"] = 256
     unet = instantiate_from_config(unet_config)
 
-    ms.load_param_into_net(unet, pretrained_t2v.model.diffusion_model.state_dict(), False)
+    # ms.load_param_into_net(unet, pretrained_t2v.model.diffusion_model.parameters_dict(), False)
 
     use_unet_lora = True
     lora_manager = LoraHandler(
@@ -235,12 +234,35 @@ def parse_args():
         type=int,
         help="How many channels to use for classifier-free diffusion. If None, use half of the latent channels",
     )
+    parser.add_argument("--num_inference_steps", type=int, default=4, help="Number of denoising steps")   
     parser.add_argument(
         "--frame_interval",
         default=1,
         type=int,
         help="Frames sampling frequency. Final video FPS will be equal to FPS / frame_interval.",
     )
+    parser.add_argument("--fps", type=int, default=8, help="FPS of the output video")
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        default="samples",
+        help="output dir to save the generated videos",
+    )
+    parser.add_argument(
+        "--save_latent",
+        type=str2bool,
+        default=False,
+        help="Save denoised video latent. If True, the denoised latents will be saved in $output_path/denoised_latents",
+    )
+    parser.add_argument(
+        "--append_timestr",
+        type=str2bool,
+        default=True,
+        help="If true, an subfolder named with timestamp under output_path will be created to save the sampling results",
+    )
+
+    # inputs
+    parser.add_argument("--prompt", type=str, default="A dancing cat.", help="Input prompt for generation.")
 
     # MS new args
     parser.add_argument("--device_target", type=str, default="Ascend", help="Ascend or GPU")
@@ -248,3 +270,11 @@ def parse_args():
     parser.add_argument("--use_parallel", default=False, type=str2bool, help="use parallel")
     parser.add_argument("--debug", type=str2bool, default=False, help="Execute inference in debug mode.")
     parser.add_argument("--seed", type=int, default=4, help="Inference seed")
+
+    args = parser.parse_args()
+    return args
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    main(args)

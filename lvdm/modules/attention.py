@@ -316,7 +316,7 @@ class SpatialTransformer(nn.Cell):
         )
         if not use_linear:
             self.proj_in = nn.Conv2d(
-                in_channels, inner_dim, kernel_size=1, stride=1, padding=0
+                in_channels, inner_dim, kernel_size=1, stride=1, padding=0, has_bias=True
             )
         else:
             self.proj_in = nn.Dense(in_channels, inner_dim)
@@ -338,7 +338,7 @@ class SpatialTransformer(nn.Cell):
         )
         if not use_linear:
             self.proj_out = zero_module(
-                nn.Conv2d(inner_dim, in_channels, kernel_size=1, stride=1, padding=0)
+                nn.Conv2d(inner_dim, in_channels, kernel_size=1, stride=1, padding=0, has_bias=True)
             )
         else:
             self.proj_out = zero_module(nn.Dense(inner_dim, in_channels))
@@ -350,14 +350,20 @@ class SpatialTransformer(nn.Cell):
         x = self.norm(x)
         if not self.use_linear:
             x = self.proj_in(x)
-        x = rearrange(x, "b c h w -> b (h w) c").contiguous()
+
+        b, c, h, w = x.shape
+        x = x.reshape(b, -1, c)
+        # x = rearrange(x, "b c h w -> b (h w) c").contiguous()
         if self.use_linear:
             x = self.proj_in(x)
         for i, block in enumerate(self.transformer_blocks):
             x = block(x, context=context)
         if self.use_linear:
             x = self.proj_out(x)
-        x = rearrange(x, "b (h w) c -> b c h w", h=h, w=w).contiguous()
+        
+        b, _, c = x.shape
+        x = x.reshape(b, c, h, w)
+        # x = rearrange(x, "b (h w) c -> b c h w", h=h, w=w).contiguous()
         if not self.use_linear:
             x = self.proj_out(x)
         return x + x_in
@@ -396,11 +402,11 @@ class TemporalTransformer(nn.Cell):
             num_groups=32, num_channels=in_channels, eps=1e-6, affine=True
         )
         self.proj_in = nn.Conv1d(
-            in_channels, inner_dim, kernel_size=1, stride=1, padding=0
+            in_channels, inner_dim, kernel_size=1, stride=1, padding=0, has_bias=True
         )
         if not use_linear:
             self.proj_in = nn.Conv1d(
-                in_channels, inner_dim, kernel_size=1, stride=1, padding=0
+                in_channels, inner_dim, kernel_size=1, stride=1, padding=0, has_bias=True
             )
         else:
             self.proj_in = nn.Dense(in_channels, inner_dim)
@@ -434,7 +440,7 @@ class TemporalTransformer(nn.Cell):
         )
         if not use_linear:
             self.proj_out = zero_module(
-                nn.Conv1d(inner_dim, in_channels, kernel_size=1, stride=1, padding=0)
+                nn.Conv1d(inner_dim, in_channels, kernel_size=1, stride=1, padding=0, has_bias=True)
             )
         else:
             self.proj_out = zero_module(nn.Dense(inner_dim, in_channels))
@@ -569,7 +575,7 @@ class SpatialSelfAttention(nn.Cell):
         b, c, h, w = q.shape
         q = rearrange(q, "b c h w -> b (h w) c")
         k = rearrange(k, "b c h w -> b c (h w)")
-        w_ = torch.einsum("bij,bjk->bik", q, k)
+        w_ = ops.einsum("bij,bjk->bik", q, k)
 
         w_ = w_ * (int(c) ** (-0.5))
         w_ = nn.functional.softmax(w_, dim=2)
@@ -577,7 +583,7 @@ class SpatialSelfAttention(nn.Cell):
         # attend to values
         v = rearrange(v, "b c h w -> b c (h w)")
         w_ = rearrange(w_, "b i j -> b j i")
-        h_ = torch.einsum("bij,bjk->bik", v, w_)
+        h_ = ops.einsum("bij,bjk->bik", v, w_)
         h_ = rearrange(h_, "b c (h w) -> b c h w", h=h)
         h_ = self.proj_out(h_)
 

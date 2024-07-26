@@ -1,21 +1,24 @@
 import os
+import yaml
+
 
 import mindspore as ms
 from mindspore import nn, ops
 
 # from torch.utils.checkpoint import checkpoint
 # import kornia
-# import open_clip
-from transformers import T5Tokenizer, CLIPTokenizer, CLIPConfig
-from mindone.transformers import T5EncoderModel, CLIPTextModel, CLIPModel
+
+from transformers import T5Tokenizer
+from mindone.transformers import T5EncoderModel, CLIPTextModel
+
 from lvdm.common import autocast
+from lvdm.modules.encoders.clip import CLIPImageProcessor, CLIPModel, CLIPTokenizer, parse, support_list
 from utils.utils import count_params
 
 
 _CKPT_URL = {
     "open_clip_vit_h_14": "https://download.mindspore.cn/toolkits/mindone/videocomposer/model_weights/open_clip_vit_h_14-9bb07a10.ckpt"
 }
-support_list = ["open_clip_vit_h_14", "vit-h-14"]
 
 
 def load_clip_model(arch, pretrained_ckpt_path, dtype):
@@ -41,7 +44,7 @@ def load_clip_model(arch, pretrained_ckpt_path, dtype):
             f"Maybe download failed. Please download it manually from {_CKPT_URL[arch.lower()]} and place it under `model_weights/`"
         )
 
-    config = CLIPConfig(config_path, pretrained_ckpt_path)
+    config = parse(config_path, pretrained_ckpt_path)
     config.dtype = dtype
     model = CLIPModel(config)
     return model
@@ -80,8 +83,8 @@ class ClassEmbedder(nn.Cell):
         # this is for use in crossattn
         c = batch[key][:, None]
         if self.ucg_rate > 0.0 and not disable_dropout:
-            mask = 1.0 - torch.bernoulli(torch.ones_like(c) * self.ucg_rate)
-            c = mask * c + (1 - mask) * torch.ones_like(c) * (self.n_classes - 1)
+            mask = 1.0 - ops.bernoulli(ops.ones_like(c) * self.ucg_rate)
+            c = mask * c + (1 - mask) * ops.ones_like(c) * (self.n_classes - 1)
             c = c.long()
         c = self.embedding(c)
         return c
@@ -90,7 +93,7 @@ class ClassEmbedder(nn.Cell):
         uc_class = (
             self.n_classes - 1
         )  # 1000 classes --> 0 ... 999, one extra class for ucg (class 1000)
-        uc = torch.ones((bs,), device=device) * uc_class
+        uc = ops.ones((bs,)) * uc_class
         uc = {self.key: uc}
         return uc
 
@@ -116,9 +119,9 @@ class FrozenT5Embedder(AbstractEncoder):
             self.freeze()
 
     def freeze(self):
-        self.transformer = self.transformer.eval()
+        self.transformer.set_train(False)
         # self.train = disabled_train
-        for param in self.parameters():
+        for param in self.get_parameters():
             param.requires_grad = False
 
     def construct(self, text):
@@ -131,7 +134,7 @@ class FrozenT5Embedder(AbstractEncoder):
             padding="max_length",
             return_tensors="pt",
         )
-        tokens = batch_encoding["input_ids"].to(self.device)
+        tokens = batch_encoding["input_ids"]
         outputs = self.transformer(input_ids=tokens)
 
         z = outputs.last_hidden_state
@@ -159,7 +162,6 @@ class FrozenCLIPEmbedder(AbstractEncoder):
         assert layer in self.LAYERS
         self.tokenizer = CLIPTokenizer.from_pretrained(version)
         self.transformer = CLIPTextModel.from_pretrained(version)
-        self.device = device
         self.max_length = max_length
         if freeze:
             self.freeze()
@@ -170,9 +172,9 @@ class FrozenCLIPEmbedder(AbstractEncoder):
             assert 0 <= abs(layer_idx) <= 12
 
     def freeze(self):
-        self.transformer = self.transformer.eval()
+        self.transformer.set_train(False)
         # self.train = disabled_train
-        for param in self.parameters():
+        for param in self.get_parameters():
             param.requires_grad = False
 
     def construct(self, text):
@@ -185,7 +187,7 @@ class FrozenCLIPEmbedder(AbstractEncoder):
             padding="max_length",
             return_tensors="pt",
         )
-        tokens = batch_encoding["input_ids"].to(self.device)
+        tokens = batch_encoding["input_ids"]
         outputs = self.transformer(
             input_ids=tokens, output_hidden_states=self.layer == "hidden"
         )
@@ -218,27 +220,21 @@ class ClipImageEmbedder(nn.Cell):
 
         self.antialias = antialias
 
-        self.register_buffer(
-            "mean", torch.Tensor([0.48145466, 0.4578275, 0.40821073]), persistent=False
-        )
-        self.register_buffer(
-            "std", torch.Tensor([0.26862954, 0.26130258, 0.27577711]), persistent=False
-        )
+        self.mean = ms.Tensor([0.48145466, 0.4578275, 0.40821073])
+        self.std = ms.Tensor([0.26862954, 0.26130258, 0.27577711])
         self.ucg_rate = ucg_rate
 
-    def preprocess(self, x):
+    def preprocess(self, x: ms.Tensor) -> ms.Tensor:
+        x = ops.interpolate(x, (224, 224), mode="bicubic", align_corners=True)
         # normalize to [0,1]
-        x = kornia.geometry.resize(
-            x,
-            (224, 224),
-            interpolation="bicubic",
-            align_corners=True,
-            antialias=self.antialias,
-        )
         x = (x + 1.0) / 2.0
         # re-normalize according to clip
-        x = kornia.enhance.normalize(x, self.mean, self.std)
+        x = (x - self.mean[None, :, None, None]) / self.std[None, :, None, None]
         return x
+
+    def encode(self, x: ms.Tensor) -> ms.Tensor:
+        # x should be a CLIP preproceesed tensor
+        return self.model.encode_image(x)
 
     def construct(self, x, no_dropout=False):
         # x is assumed to be in range [-1,1]
@@ -246,8 +242,8 @@ class ClipImageEmbedder(nn.Cell):
         out = out.to(x.dtype)
         if self.ucg_rate > 0.0 and not no_dropout:
             out = (
-                torch.bernoulli(
-                    (1.0 - self.ucg_rate) * torch.ones(out.shape[0], device=out.device)
+                ops.bernoulli(
+                    (1.0 - self.ucg_rate) * ops.ones(out.shape[0])
                 )[:, None]
                 * out
             )
@@ -267,10 +263,10 @@ class FrozenOpenCLIPEmbedder(AbstractEncoder):
 
     def __init__(
         self,
-        arch="ViT-H-14",
+        arch="open_clip_vit_h_14",
         version="laion2b_s32b_b79k",
-        pretrained_ckpt_path="./vit-h-14-laion-2b/open_clip_vit_h_14.ckpt",
-        tokenizer_path="./vit-h-14-laion-2b/bpe_simple_vocab_16e6.txt.gz",
+        pretrained_ckpt_path="./checkpoints/open_clip_vit_h_14-9bb07a10.ckpt",
+        tokenizer_path="./checkpoints/bpe_simple_vocab_16e6.txt.gz",
         max_length=77,
         freeze=True,
         layer="last",
@@ -342,25 +338,22 @@ class FrozenOpenCLIPImageEmbedder(AbstractEncoder):
 
     def __init__(
         self,
-        arch="ViT-H-14",
+        arch="open_clip_vit_h_14",
         version="laion2b_s32b_b79k",
-        device="cuda",
+        pretrained_ckpt_path="./checkpoints/open_clip_vit_h_14-9bb07a10.ckpt",
         max_length=77,
         freeze=True,
         layer="pooled",
         antialias=True,
         ucg_rate=0.0,
+        dtype=ms.float32,
     ):
         super().__init__()
-        model, _, _ = open_clip.create_model_and_transforms(
-            arch,
-            device=torch.device("cpu"),
-            pretrained=version,
-        )
+        self.dtype = dtype
+        model = load_clip_model(arch, pretrained_ckpt_path, str(self.dtype).lower())
         del model.transformer
         self.model = model
 
-        self.device = device
         self.max_length = max_length
         if freeze:
             self.freeze()
@@ -371,12 +364,8 @@ class FrozenOpenCLIPImageEmbedder(AbstractEncoder):
 
         self.antialias = antialias
 
-        self.register_buffer(
-            "mean", torch.Tensor([0.48145466, 0.4578275, 0.40821073]), persistent=False
-        )
-        self.register_buffer(
-            "std", torch.Tensor([0.26862954, 0.26130258, 0.27577711]), persistent=False
-        )
+        self.mean = ms.Tensor([0.48145466, 0.4578275, 0.40821073])
+        self.std = ms.Tensor([0.26862954, 0.26130258, 0.27577711])
         self.ucg_rate = ucg_rate
 
     def preprocess(self, x):
@@ -394,7 +383,7 @@ class FrozenOpenCLIPImageEmbedder(AbstractEncoder):
         return x
 
     def freeze(self):
-        self.model = self.model.eval()
+        self.model.set_train(False)
         for param in self.parameters():
             param.requires_grad = False
 
@@ -403,8 +392,8 @@ class FrozenOpenCLIPImageEmbedder(AbstractEncoder):
         z = self.encode_with_vision_transformer(image)
         if self.ucg_rate > 0.0 and not no_dropout:
             z = (
-                torch.bernoulli(
-                    (1.0 - self.ucg_rate) * torch.ones(z.shape[0], device=z.device)
+                ops.bernoulli(
+                    (1.0 - self.ucg_rate) * ops.ones(z.shape[0])
                 )[:, None]
                 * z
             )
@@ -426,22 +415,17 @@ class FrozenOpenCLIPImageEmbedderV2(AbstractEncoder):
 
     def __init__(
         self,
-        arch="ViT-H-14",
+        arch="open_clip_vit_h_14",
         version="laion2b_s32b_b79k",
-        device="cuda",
+        pretrained_ckpt_path="./checkpoints/open_clip_vit_h_14-9bb07a10.ckpt",
         freeze=True,
         layer="pooled",
         antialias=True,
     ):
         super().__init__()
-        model, _, _ = open_clip.create_model_and_transforms(
-            arch,
-            device=torch.device("cpu"),
-            pretrained=version,
-        )
+        model = load_clip_model(arch, pretrained_ckpt_path, str(self.dtype).lower())
         del model.transformer
         self.model = model
-        self.device = device
 
         if freeze:
             self.freeze()
@@ -451,12 +435,8 @@ class FrozenOpenCLIPImageEmbedderV2(AbstractEncoder):
             self.layer_idx = 1
 
         self.antialias = antialias
-        self.register_buffer(
-            "mean", torch.Tensor([0.48145466, 0.4578275, 0.40821073]), persistent=False
-        )
-        self.register_buffer(
-            "std", torch.Tensor([0.26862954, 0.26130258, 0.27577711]), persistent=False
-        )
+        self.mean = ms.Tensor([0.48145466, 0.4578275, 0.40821073])
+        self.std = ms.Tensor([0.26862954, 0.26130258, 0.27577711])
 
     def preprocess(self, x):
         # normalize to [0,1]
@@ -473,8 +453,8 @@ class FrozenOpenCLIPImageEmbedderV2(AbstractEncoder):
         return x
 
     def freeze(self):
-        self.model = self.model.eval()
-        for param in self.model.parameters():
+        self.model.set_train(False)
+        for param in self.model.get_parameters():
             param.requires_grad = False
 
     def construct(self, image, no_dropout=False):
@@ -510,11 +490,11 @@ class FrozenOpenCLIPImageEmbedderV2(AbstractEncoder):
             x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
 
         # class embeddings and positional embeddings
-        x = torch.cat(
+        x = ops.cat(
             [
                 self.model.visual.class_embedding.to(x.dtype)
-                + torch.zeros(
-                    x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device
+                + ops.zeros(
+                    x.shape[0], 1, x.shape[-1], dtype=x.dtype
                 ),
                 x,
             ],
@@ -538,15 +518,14 @@ class FrozenCLIPT5Encoder(AbstractEncoder):
         self,
         clip_version="openai/clip-vit-large-patch14",
         t5_version="google/t5-v1_1-xl",
-        device="cuda",
         clip_max_length=77,
         t5_max_length=77,
     ):
         super().__init__()
         self.clip_encoder = FrozenCLIPEmbedder(
-            clip_version, device, max_length=clip_max_length
+            clip_version, max_length=clip_max_length
         )
-        self.t5_encoder = FrozenT5Embedder(t5_version, device, max_length=t5_max_length)
+        self.t5_encoder = FrozenT5Embedder(t5_version, max_length=t5_max_length)
         print(
             f"{self.clip_encoder.__class__.__name__} has {count_params(self.clip_encoder) * 1.e-6:.2f} M parameters, "
             f"{self.t5_encoder.__class__.__name__} comes with {count_params(self.t5_encoder) * 1.e-6:.2f} M params."

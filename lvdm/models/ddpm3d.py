@@ -120,6 +120,9 @@ class DDPM(nn.Cell):
         if self.learn_logvar:
             self.logvar = ms.Parameter(self.logvar, requires_grad=True)
 
+    def to(self, dtype):
+        self.to_float(dtype)
+
     def register_schedule(
         self,
         given_betas=None,
@@ -552,8 +555,9 @@ class LatentDiffusion(DDPM):
 
     def encode_first_stage(self, x):
         if self.encoder_type == "2d" and x.dim() == 5:
-            b, _, t, _, _ = x.shape
-            x = rearrange(x, "b c t h w -> (b t) c h w")
+            b, c, t, h, w = x.shape
+            x = x.reshape(-1, c, h, w)
+            # x = rearrange(x, "b c t h w -> (b t) c h w")
             reshape_back = True
         else:
             reshape_back = False
@@ -562,7 +566,9 @@ class LatentDiffusion(DDPM):
         results = self.get_first_stage_encoding(encoder_posterior).detach()
 
         if reshape_back:
-            results = rearrange(results, "(b t) c h w -> b c t h w", b=b, t=t)
+            _, c, h, w = results.shape
+            results = results.reshape(b, c, t, h, w)
+            # results = rearrange(results, "(b t) c h w -> b c t h w", b=b, t=t)
 
         return results
 
@@ -583,8 +589,9 @@ class LatentDiffusion(DDPM):
 
     def decode_core(self, z, **kwargs):
         if self.encoder_type == "2d" and z.dim() == 5:
-            b, _, t, _, _ = z.shape
-            z = rearrange(z, "b c t h w -> (b t) c h w")
+            b, c, t, h, w = z.shape
+            z = z.reshape(-1, c, h, w)
+            # z = rearrange(z, "b c t h w -> (b t) c h w")
             reshape_back = True
         else:
             reshape_back = False
@@ -594,7 +601,9 @@ class LatentDiffusion(DDPM):
         results = self.first_stage_model.decode(z, **kwargs)
 
         if reshape_back:
-            results = rearrange(results, "(b t) c h w -> b c t h w", b=b, t=t)
+            _, c, h, w = results.shape
+            results = results.reshape(b, c, t, h, w) 
+            # results = rearrange(results, "(b t) c h w -> b c t h w", b=b, t=t)
         return results
 
     def decode_first_stage(self, z, **kwargs):
