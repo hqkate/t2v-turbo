@@ -35,16 +35,16 @@ class AttnBlock(nn.Cell):
 
         self.norm = Normalize(in_channels)
         self.q = nn.Conv2d(
-            in_channels, in_channels, kernel_size=1, stride=1, padding=0
+            in_channels, in_channels, kernel_size=1, stride=1, padding=0, has_bias=True
         )
         self.k = nn.Conv2d(
-            in_channels, in_channels, kernel_size=1, stride=1, padding=0
+            in_channels, in_channels, kernel_size=1, stride=1, padding=0, has_bias=True
         )
         self.v = nn.Conv2d(
-            in_channels, in_channels, kernel_size=1, stride=1, padding=0
+            in_channels, in_channels, kernel_size=1, stride=1, padding=0, has_bias=True
         )
         self.proj_out = nn.Conv2d(
-            in_channels, in_channels, kernel_size=1, stride=1, padding=0
+            in_channels, in_channels, kernel_size=1, stride=1, padding=0, has_bias=True
         )
 
     def construct(self, x):
@@ -94,7 +94,7 @@ class Downsample(nn.Cell):
         if self.with_conv:
             # no asymmetric padding in torch conv, must do it ourselves
             self.conv = nn.Conv2d(
-                in_channels, in_channels, kernel_size=3, stride=2, padding=0
+                in_channels, in_channels, kernel_size=3, stride=2, padding=0, has_bias=True
             )
 
     def construct(self, x):
@@ -114,11 +114,12 @@ class Upsample(nn.Cell):
         self.in_channels = in_channels
         if self.with_conv:
             self.conv = nn.Conv2d(
-                in_channels, in_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
+                in_channels, in_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad", has_bias=True
             )
 
     def construct(self, x):
-        x = ops.interpolate(x, scale_factor=2.0, mode="nearest")
+        # x = ops.interpolate(x, scale_factor=2.0, mode="nearest")
+        x = ops.ResizeNearestNeighbor((x.shape[2] * 2, x.shape[3] * 2))(x)
         if self.with_conv:
             x = self.conv(x)
         return x
@@ -163,23 +164,23 @@ class ResnetBlock(nn.Cell):
 
         self.norm1 = Normalize(in_channels)
         self.conv1 = nn.Conv2d(
-            in_channels, out_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
+            in_channels, out_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad", has_bias=True
         )
         if temb_channels > 0:
             self.temb_proj = nn.Dense(temb_channels, out_channels)
         self.norm2 = Normalize(out_channels)
         self.dropout = nn.Dropout(p=dropout)
         self.conv2 = nn.Conv2d(
-            out_channels, out_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
+            out_channels, out_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad", has_bias=True
         )
         if self.in_channels != self.out_channels:
             if self.use_conv_shortcut:
                 self.conv_shortcut = nn.Conv2d(
-                    in_channels, out_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
+                    in_channels, out_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad", has_bias=True
                 )
             else:
                 self.nin_shortcut = nn.Conv2d(
-                    in_channels, out_channels, kernel_size=1, stride=1, padding=0
+                    in_channels, out_channels, kernel_size=1, stride=1, padding=0, has_bias=True
                 )
 
     def construct(self, x, temb):
@@ -244,7 +245,7 @@ class Model(nn.Cell):
 
         # downsampling
         self.conv_in = nn.Conv2d(
-            in_channels, self.ch, kernel_size=3, stride=1, padding=1, pad_mode="pad"
+            in_channels, self.ch, kernel_size=3, stride=1, padding=1, pad_mode="pad", has_bias=True
         )
 
         curr_res = resolution
@@ -323,7 +324,7 @@ class Model(nn.Cell):
         # end
         self.norm_out = Normalize(block_in)
         self.conv_out = nn.Conv2d(
-            block_in, out_ch, kernel_size=3, stride=1, padding=1, pad_mode="pad"
+            block_in, out_ch, kernel_size=3, stride=1, padding=1, pad_mode="pad", has_bias=True
         )
 
     def construct(self, x, t=None, context=None):
@@ -410,7 +411,7 @@ class Encoder(nn.Cell):
 
         # downsampling
         self.conv_in = nn.Conv2d(
-            in_channels, self.ch, kernel_size=3, stride=1, padding=1, pad_mode="pad"
+            in_channels, self.ch, kernel_size=3, stride=1, padding=1, pad_mode="pad", has_bias=True
         )
 
         curr_res = resolution
@@ -467,6 +468,7 @@ class Encoder(nn.Cell):
             stride=1,
             padding=1,
             pad_mode="pad",
+            has_bias=True,
         )
 
     def construct(self, x):
@@ -550,7 +552,7 @@ class Decoder(nn.Cell):
 
         # z to block_in
         self.conv_in = nn.Conv2d(
-            z_channels, block_in, kernel_size=3, stride=1, padding=1, pad_mode="pad"
+            z_channels, block_in, kernel_size=3, stride=1, padding=1, pad_mode="pad", has_bias=True
         )
 
         # middle
@@ -598,7 +600,7 @@ class Decoder(nn.Cell):
         # end
         self.norm_out = Normalize(block_in)
         self.conv_out = nn.Conv2d(
-            block_in, out_ch, kernel_size=3, stride=1, padding=1, pad_mode="pad"
+            block_in, out_ch, kernel_size=3, stride=1, padding=1, pad_mode="pad", has_bias=True
         )
 
     def construct(self, z):
@@ -648,7 +650,7 @@ class SimpleDecoder(nn.Cell):
         super().__init__()
         self.model = nn.CellList(
             [
-                nn.Conv2d(in_channels, in_channels, 1),
+                nn.Conv2d(in_channels, in_channels, 1, has_bias=True),
                 ResnetBlock(
                     in_channels=in_channels,
                     out_channels=2 * in_channels,
@@ -667,14 +669,14 @@ class SimpleDecoder(nn.Cell):
                     temb_channels=0,
                     dropout=0.0,
                 ),
-                nn.Conv2d(2 * in_channels, in_channels, 1),
+                nn.Conv2d(2 * in_channels, in_channels, 1, has_bias=True),
                 Upsample(in_channels, with_conv=True),
             ]
         )
         # end
         self.norm_out = Normalize(in_channels)
         self.conv_out = nn.Conv2d(
-            in_channels, out_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
+            in_channels, out_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad", has_bias=True
         )
 
     def construct(self, x):
@@ -731,7 +733,7 @@ class UpsampleDecoder(nn.Cell):
         # end
         self.norm_out = Normalize(block_in)
         self.conv_out = nn.Conv2d(
-            block_in, out_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
+            block_in, out_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad", has_bias=True
         )
 
     def construct(self, x):
@@ -754,7 +756,7 @@ class LatentRescaler(nn.Cell):
         # residual block, interpolate, residual block
         self.factor = factor
         self.conv_in = nn.Conv2d(
-            in_channels, mid_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
+            in_channels, mid_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad", has_bias=True
         )
         self.res_block1 = nn.CellList(
             [
@@ -784,6 +786,7 @@ class LatentRescaler(nn.Cell):
             mid_channels,
             out_channels,
             kernel_size=1,
+            has_bias=True,
         )
 
     def construct(self, x):
@@ -980,7 +983,7 @@ class FirstStagePostProcessor(nn.Cell):
 
         self.proj_norm = Normalize(in_channels, num_groups=in_channels // 2)
         self.proj = nn.Conv2d(
-            in_channels, n_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad"
+            in_channels, n_channels, kernel_size=3, stride=1, padding=1, pad_mode="pad", has_bias=True
         )
 
         blocks = []

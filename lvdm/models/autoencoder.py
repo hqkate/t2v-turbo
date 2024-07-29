@@ -31,8 +31,8 @@ class AutoencoderKL(nn.Cell):
         self.decoder = Decoder(**ddconfig)
         self.loss = instantiate_from_config(lossconfig)
         assert ddconfig["double_z"]
-        self.quant_conv = nn.Conv2d(2 * ddconfig["z_channels"], 2 * embed_dim, 1)
-        self.post_quant_conv = nn.Conv2d(embed_dim, ddconfig["z_channels"], 1)
+        self.quant_conv = nn.Conv2d(2 * ddconfig["z_channels"], 2 * embed_dim, 1, has_bias=True)
+        self.post_quant_conv = nn.Conv2d(embed_dim, ddconfig["z_channels"], 1, has_bias=True)
         self.embed_dim = embed_dim
         self.input_dim = input_dim
         self.test = test

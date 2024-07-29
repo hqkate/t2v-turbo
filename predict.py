@@ -150,7 +150,7 @@ def main(args):
     unet_config["params"]["time_cond_proj_dim"] = 256
     unet = instantiate_from_config(unet_config)
 
-    # ms.load_param_into_net(unet, pretrained_t2v.model.diffusion_model.parameters_dict(), False)
+    ms.load_param_into_net(unet, pretrained_t2v.model.diffusion_model.parameters_dict(), False)
 
     use_unet_lora = True
     lora_manager = LoraHandler(
@@ -194,14 +194,14 @@ def main(args):
 
     # 4. post-processing
 
-    video = result[0].cpu()
+    video = result[0] # result -> (1, 3, 16, 320, 512)
     video = ops.clamp(video.float(), -1.0, 1.0)
     video = video.permute(1, 0, 2, 3)
     video = (video + 1.0) / 2.0
-    video = (video * 255).to(ms.uint8).permute(0, 2, 3, 1)
+    video = video.permute(0, 2, 3, 1).asnumpy()
 
     # 5. save result
-    out_path = "/tmp/out.mp4"
+    out_path = "./results/out.mp4"
     save_videos(video, out_path, fps=args.fps / args.frame_interval)
 
     logger.info(f"Video saved in {out_path}")

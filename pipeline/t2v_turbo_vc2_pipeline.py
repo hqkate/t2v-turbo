@@ -202,6 +202,7 @@ class T2VTurboVC2Pipeline(DiffusionPipeline):
                 progress_bar.update()
 
         if not output_type == "latent":
+            # denoised -> Tensor, (1, 4, 16, 40, 64)
             videos = self.pretrained_t2v.decode_first_stage_2DAE(denoised)
         else:
             videos = denoised
