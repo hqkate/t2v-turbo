@@ -64,7 +64,7 @@ def avg_pool_nd(dims, *args, **kwargs):
     elif dims == 2:
         return nn.AvgPool2d(*args, **kwargs)
     elif dims == 3:
-        return nn.AvgPool3d(*args, **kwargs)
+        return ops.AvgPool3D(*args, **kwargs)
     raise ValueError(f"unsupported dimensions: {dims}")
 
 

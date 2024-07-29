@@ -15,6 +15,7 @@ from lvdm.common import (
     checkpoint,
     exists,
     default,
+    GroupNormExtend
 )
 from lvdm.basics import (
     zero_module,
@@ -59,6 +60,7 @@ class CrossAttention(nn.Cell):
         relative_position=False,
         temporal_length=None,
         img_cross_attention=False,
+        dtype=ms.float32,
     ):
         super().__init__()
         inner_dim = dim_head * heads
@@ -67,19 +69,19 @@ class CrossAttention(nn.Cell):
         self.scale = dim_head**-0.5
         self.heads = heads
         self.dim_head = dim_head
-        self.to_q = nn.Dense(query_dim, inner_dim, has_bias=False)
-        self.to_k = nn.Dense(context_dim, inner_dim, has_bias=False)
-        self.to_v = nn.Dense(context_dim, inner_dim, has_bias=False)
+        self.to_q = nn.Dense(query_dim, inner_dim, has_bias=False).to_float(dtype)
+        self.to_k = nn.Dense(context_dim, inner_dim, has_bias=False).to_float(dtype)
+        self.to_v = nn.Dense(context_dim, inner_dim, has_bias=False).to_float(dtype)
         self.to_out = nn.SequentialCell(
-            nn.Dense(inner_dim, query_dim), nn.Dropout(p=dropout)
+            nn.Dense(inner_dim, query_dim).to_float(dtype), nn.Dropout(p=dropout)
         )
 
         self.image_cross_attention_scale = 1.0
         self.text_context_len = 77
         self.img_cross_attention = img_cross_attention
         if self.img_cross_attention:
-            self.to_k_ip = nn.Dense(context_dim, inner_dim, has_bias=False)
-            self.to_v_ip = nn.Dense(context_dim, inner_dim, has_bias=False)
+            self.to_k_ip = nn.Dense(context_dim, inner_dim, has_bias=False).to_float(dtype)
+            self.to_v_ip = nn.Dense(context_dim, inner_dim, has_bias=False).to_float(dtype)
 
         self.relative_position = relative_position
         if self.relative_position:
@@ -94,6 +96,28 @@ class CrossAttention(nn.Cell):
             ## only used for spatial attention, while NOT for temporal attention
             if XFORMERS_IS_AVAILBLE and temporal_length is None:
                 self.forward = self.efficient_forward
+
+    @staticmethod
+    def _rearrange_in(x, h):
+        # (b, n, h*d) -> (b*h, n, d)
+        b, n, d = x.shape
+        d = d // h
+
+        x = ops.reshape(x, (b, n, h, d))
+        x = ops.transpose(x, (0, 2, 1, 3))
+        x = ops.reshape(x, (b * h, n, d))
+        return x
+
+    @staticmethod
+    def _rearrange_out(x, h):
+        # (b*h, n, d) -> (b, n, h*d)
+        b, n, d = x.shape
+        b = b // h
+
+        x = ops.reshape(x, (b, h, n, d))
+        x = ops.transpose(x, (0, 2, 1, 3))
+        x = ops.reshape(x, (b, n, h * d))
+        return x
 
     def construct(self, x, context=None, mask=None):
         h = self.heads
@@ -114,40 +138,60 @@ class CrossAttention(nn.Cell):
             k = self.to_k(context)
             v = self.to_v(context)
 
-        q, k, v = map(lambda t: rearrange(t, "b n (h d) -> (b h) n d", h=h), (q, k, v))
-        sim = ops.einsum("b i d, b j d -> b i j", q, k) * self.scale
+        # q, k, v = map(lambda t: rearrange(t, "b n (h d) -> (b h) n d", h=h), (q, k, v))
+
+        # (b, n, h*d) -> (b*h, n, d)
+        q = self._rearrange_in(q, h)
+        k = self._rearrange_in(k, h)
+        v = self._rearrange_in(v, h)
+
+        sim = ops.matmul(q, ops.transpose(k, (0, 2, 1))) * self.scale
+        # sim = ops.einsum("b i d, b j d -> b i j", q, k) * self.scale
+
         if self.relative_position:
             len_q, len_k, len_v = q.shape[1], k.shape[1], v.shape[1]
             k2 = self.relative_position_k(len_q, len_k)
-            sim2 = einsum("b t d, t s d -> b t s", q, k2) * self.scale  # TODO check
+            # sim2 = einsum("b t d, t s d -> b t s", q, k2) * self.scale  # TODO check
+            sim2 = ops.matmul(q, ops.transpose(k2, (0, 2, 1))) * self.scale
             sim += sim2
         del k
 
         if exists(mask):
             ## feasible for causal attention mask only
             max_neg_value = -np.finfo(sim.dtype).max
-            mask = repeat(mask, "b i j -> (b h) i j", h=h)
+            # mask = repeat(mask, "b i j -> (b h) i j", h=h)
+            mask = mask.repeat(h, 0)
             sim = sim.masked_fill(~(mask > 0.5), max_neg_value)
 
         # attention, what we cannot get enough of
-        sim = sim.softmax(dim=-1)
-        out = einsum("b i j, b j d -> b i d", sim, v)
+        sim = ops.softmax(sim, axis=-1)
+        # out = einsum("b i j, b j d -> b i d", sim, v)
+        out = ops.matmul(sim, v)
+
         if self.relative_position:
             v2 = self.relative_position_v(len_q, len_v)
-            out2 = einsum("b t s, t s d -> b t d", sim, v2)  # TODO check
+            # out2 = einsum("b t s, t s d -> b t d", sim, v2)  # TODO check
+            out2 = ops.matmul(sim, v2) # TODO check
             out += out2
-        out = rearrange(out, "(b h) n d -> b n (h d)", h=h)
+
+        # out = rearrange(out, "(b h) n d -> b n (h d)", h=h)
+        out = self._rearrange_out(out, h)
 
         ## considering image token additionally
         if context is not None and self.img_cross_attention:
-            k_ip, v_ip = map(
-                lambda t: rearrange(t, "b n (h d) -> (b h) n d", h=h), (k_ip, v_ip)
-            )
-            sim_ip = einsum("b i d, b j d -> b i j", q, k_ip) * self.scale
+            # k_ip, v_ip = map(
+            #     lambda t: rearrange(t, "b n (h d) -> (b h) n d", h=h), (k_ip, v_ip)
+            # )
+            k_ip = self._rearrange_in(k_ip, h)
+            v_ip = self._rearrange_in(v_ip, h)
+            # sim_ip = einsum("b i d, b j d -> b i j", q, k_ip) * self.scale
+            sim_ip = ops.matmul(q, ops.transpose(k_ip, (0, 2, 1))) * self.scale
             del k_ip
-            sim_ip = sim_ip.softmax(dim=-1)
-            out_ip = einsum("b i j, b j d -> b i d", sim_ip, v_ip)
-            out_ip = rearrange(out_ip, "(b h) n d -> b n (h d)", h=h)
+            sim_ip = sim_ip.softmax(axis=-1)
+            # out_ip = einsum("b i j, b j d -> b i d", sim_ip, v_ip)
+            out_ip = ops.matmul(sim_ip, v_ip)
+            # out_ip = rearrange(out_ip, "(b h) n d -> b n (h d)", h=h)
+            out_ip = self._rearrange_out(out_ip, h)
             out = out + self.image_cross_attention_scale * out_ip
         del q
 
@@ -264,11 +308,11 @@ class BasicTransformerBlock(nn.Cell):
             input_tuple = (x, context)
         if mask is not None:
             forward_mask = partial(self._forward, mask=mask)
-            return checkpoint(forward_mask, (x,), self.parameters(), self.checkpoint)
+            return checkpoint(forward_mask, (x,), self.get_parameters(), self.checkpoint)
         if context is not None and mask is not None:
             input_tuple = (x, context, mask)
         return checkpoint(
-            self._forward, input_tuple, self.parameters(), self.checkpoint
+            self._forward, input_tuple, self.get_parameters(), self.checkpoint
         )
 
     def _forward(self, x, context=None, mask=None):
@@ -311,7 +355,7 @@ class SpatialTransformer(nn.Cell):
         super().__init__()
         self.in_channels = in_channels
         inner_dim = n_heads * d_head
-        self.norm = nn.GroupNorm(
+        self.norm = GroupNormExtend(
             num_groups=32, num_channels=in_channels, eps=1e-6, affine=True
         )
         if not use_linear:
@@ -398,7 +442,7 @@ class TemporalTransformer(nn.Cell):
         self.causal_attention = causal_attention
         self.in_channels = in_channels
         inner_dim = n_heads * d_head
-        self.norm = nn.GroupNorm(
+        self.norm = GroupNormExtend(
             num_groups=32, num_channels=in_channels, eps=1e-6, affine=True
         )
         self.proj_in = nn.Conv1d(
@@ -450,16 +494,25 @@ class TemporalTransformer(nn.Cell):
         b, c, t, h, w = x.shape
         x_in = x
         x = self.norm(x)
-        x = rearrange(x, "b c t h w -> (b h w) c t").contiguous()
+
+        # x = rearrange(x, "b c t h w -> (b h w) c t").contiguous()
+        b, c, t, h, w = x.shape
+        x = x.permute(0, 3, 4, 1, 2)
+        x = x.reshape(-1, c, t)
+
         if not self.use_linear:
             x = self.proj_in(x)
-        x = rearrange(x, "bhw c t -> bhw t c").contiguous()
+
+        # x = rearrange(x, "bhw c t -> bhw t c").contiguous()
+        x = x.permute(0, 2, 1)
+
         if self.use_linear:
             x = self.proj_in(x)
 
         if self.causal_attention:
-            mask = self.mask.to(x.device)
-            mask = repeat(mask, "l i j -> (l bhw) i j", bhw=b * h * w)
+            mask = self.mask
+            # mask = repeat(mask, "l i j -> (l bhw) i j", bhw=b * h * w)
+            mask = mask.repeat(b*h*w, 0)
         else:
             mask = None
 
@@ -467,26 +520,42 @@ class TemporalTransformer(nn.Cell):
             ## note: if no context is given, cross-attention defaults to self-attention
             for i, block in enumerate(self.transformer_blocks):
                 x = block(x, mask=mask)
-            x = rearrange(x, "(b hw) t c -> b hw t c", b=b).contiguous()
+            # x = rearrange(x, "(b hw) t c -> b hw t c", b=b).contiguous()
+            _, t, c = x.shape
+            x = x.reshape(b, -1, t, c)
         else:
-            x = rearrange(x, "(b hw) t c -> b hw t c", b=b).contiguous()
-            context = rearrange(context, "(b t) l con -> b t l con", t=t).contiguous()
+            # x = rearrange(x, "(b hw) t c -> b hw t c", b=b).contiguous()
+            _, t, c = x.shape
+            x = x.reshape(b, -1, t, c)
+            
+            # context = rearrange(context, "(b t) l con -> b t l con", t=t).contiguous()
+            _, l, con = context.shape
+            context = context.reshape(b, t, l, con)
+
             for i, block in enumerate(self.transformer_blocks):
                 # calculate each batch one by one (since number in shape could not greater then 65,535 for some package)
                 for j in range(b):
-                    context_j = repeat(
-                        context[j], "t l con -> (t r) l con", r=(h * w) // t, t=t
-                    ).contiguous()
+                    rep = (h * w) // context_j.shape[0]
+                    context_j = context_j.repeat(rep, 0)
+                    # context_j = repeat(
+                    #     context[j], "t l con -> (t r) l con", r=(h * w) // t, t=t
+                    # ).contiguous()
                     ## note: causal mask will not applied in cross-attention case
                     x[j] = block(x[j], context=context_j)
 
         if self.use_linear:
             x = self.proj_out(x)
-            x = rearrange(x, "b (h w) t c -> b c t h w", h=h, w=w).contiguous()
+            # x = rearrange(x, "b (h w) t c -> b c t h w", h=h, w=w).contiguous()
+            x = ops.reshape(x, (x.shape[0], h, w, x.shape[2], x.shape[3]))
+            x = ops.transpose(x, (0, 4, 3, 1, 2))
         if not self.use_linear:
-            x = rearrange(x, "b hw t c -> (b hw) c t").contiguous()
+            # x = rearrange(x, "b hw t c -> (b hw) c t").contiguous()
+            x = ops.reshape(x, (-1, x.shape[2], x.shape[3]))
+            x = ops.transpose(x, (0, 2, 1))
             x = self.proj_out(x)
-            x = rearrange(x, "(b h w) c t -> b c t h w", b=b, h=h, w=w).contiguous()
+            # x = rearrange(x, "(b h w) c t -> b c t h w", b=b, h=h, w=w).contiguous()
+            x = ops.reshape(x, (b, h, w, x.shape[1], x.shape[2]))
+            x = ops.transpose(x, (0, 3, 4, 1, 2))
 
         return x + x_in
 
@@ -497,7 +566,7 @@ class GEGLU(nn.Cell):
         self.proj = nn.Dense(dim_in, dim_out * 2)
 
     def construct(self, x):
-        x, gate = self.proj(x).chunk(2, dim=-1)
+        x, gate = self.proj(x).chunk(2, axis=-1)
         return x * ops.gelu(gate)
 
 
@@ -528,13 +597,23 @@ class LinearAttention(nn.Cell):
         self.to_qkv = nn.Conv2d(dim, hidden_dim * 3, 1, has_bias=False)
         self.to_out = nn.Conv2d(hidden_dim, dim, 1)
 
+    def _rearrange_in(self, x, heads):
+        # b (qkv heads c) h w -> qkv b heads c (h w)
+        b, _, h, w = x.shape
+        d = d // h
+
+        x = ops.reshape(x, (b, n, h, d))
+        x = ops.transpose(x, (0, 2, 1, 3))
+        x = ops.reshape(x, (b * h, n, d))
+        return x
+
     def construct(self, x):
         b, c, h, w = x.shape
         qkv = self.to_qkv(x)
         q, k, v = rearrange(
             qkv, "b (qkv heads c) h w -> qkv b heads c (h w)", heads=self.heads, qkv=3
         )
-        k = k.softmax(dim=-1)
+        k = k.softmax(axis=-1)
         context = torch.einsum("bhdn,bhen->bhde", k, v)
         out = torch.einsum("bhde,bhdn->bhen", context, q)
         out = rearrange(
@@ -548,7 +627,7 @@ class SpatialSelfAttention(nn.Cell):
         super().__init__()
         self.in_channels = in_channels
 
-        self.norm = nn.GroupNorm(
+        self.norm = GroupNormExtend(
             num_groups=32, num_channels=in_channels, eps=1e-6, affine=True
         )
         self.q = nn.Conv2d(
@@ -573,18 +652,26 @@ class SpatialSelfAttention(nn.Cell):
 
         # compute attention
         b, c, h, w = q.shape
-        q = rearrange(q, "b c h w -> b (h w) c")
-        k = rearrange(k, "b c h w -> b c (h w)")
-        w_ = ops.einsum("bij,bjk->bik", q, k)
+        # q = rearrange(q, "b c h w -> b (h w) c")
+        q = q.reshape(b, -1, c)
+        # k = rearrange(k, "b c h w -> b c (h w)")
+        k = k.reshape(b, c, -1)
+        # w_ = ops.einsum("bij,bjk->bik", q, k)
+        w_ = ops.matmul(q, k) # TODO: check!
 
         w_ = w_ * (int(c) ** (-0.5))
-        w_ = nn.functional.softmax(w_, dim=2)
+        w_ = ops.softmax(w_, axis=2)
 
         # attend to values
-        v = rearrange(v, "b c h w -> b c (h w)")
-        w_ = rearrange(w_, "b i j -> b j i")
-        h_ = ops.einsum("bij,bjk->bik", v, w_)
-        h_ = rearrange(h_, "b c (h w) -> b c h w", h=h)
+        # v = rearrange(v, "b c h w -> b c (h w)")
+        b, c, h, w = v.shape
+        v = v.reshape(b, c, -1)
+        # w_ = rearrange(w_, "b i j -> b j i")
+        w_ = w_.permute(0, 2, 1)
+        # h_ = ops.einsum("bij,bjk->bik", v, w_)
+        h_ = ops.matmul(v, w_) # TODO: check!!
+        # h_ = rearrange(h_, "b c (h w) -> b c h w", h=h)
+        h_ = h_.reshape(h_.shape[0], h_.shape[1], -1)
         h_ = self.proj_out(h_)
 
         return x + h_

@@ -19,12 +19,12 @@ def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
             -math.log(max_period)
             * ops.arange(start=0, end=half, dtype=ms.float32)
             / half
-        ).to(device=timesteps.device)
+        )
         args = timesteps[:, None].float() * freqs[None]
-        embedding = ops.cat([ops.cos(args), ops.sin(args)], dim=-1)
+        embedding = ops.cat([ops.cos(args), ops.sin(args)], axis=-1)
         if dim % 2:
             embedding = ops.cat(
-                [embedding, ops.zeros_like(embedding[:, :1])], dim=-1
+                [embedding, ops.zeros_like(embedding[:, :1])], axis=-1
             )
     else:
         timesteps = timesteps.unsqueeze(1)

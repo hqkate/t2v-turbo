@@ -5,6 +5,7 @@ import mindspore as ms
 from mindspore import nn, ops
 
 from utils.utils import instantiate_from_config
+from lvdm.common import GroupNormExtend
 from lvdm.distributions import DiagonalGaussianDistribution
 from lvdm.modules.attention import LinearAttention
 
@@ -15,7 +16,7 @@ def nonlinearity(x):
 
 
 def Normalize(in_channels, num_groups=32):
-    return nn.GroupNorm(
+    return GroupNormExtend(
         num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True
     )
 
@@ -61,7 +62,7 @@ class AttnBlock(nn.Cell):
 
         w_ = ops.bmm(q, k)  # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
         w_ = w_ * (int(c) ** (-0.5))
-        w_ = ops.softmax(w_, dim=2)
+        w_ = ops.softmax(w_, axis=2)
 
         # attend to values
         v = v.reshape(b, c, h * w)

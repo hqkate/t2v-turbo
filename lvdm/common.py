@@ -5,6 +5,16 @@ import mindspore as ms
 from mindspore import nn, ops
 
 
+class GroupNormExtend(nn.GroupNorm):
+    # GroupNorm supporting tensors with more than 4 dim
+    def construct(self, x):
+        x_shape = x.shape
+        if x.ndim >= 5:
+            x = x.view(x_shape[0], x_shape[1], x_shape[2], -1)
+        y = super().construct(x)
+        return y.view(x_shape)
+
+
 def gather_data(data, return_np=True):
     """gather data from multiple processes to one list"""
     data_list = [ops.zeros_like(data) for _ in range(dist.get_world_size())]
@@ -103,8 +113,11 @@ def checkpoint(func, inputs, params, flag):
                    explicitly take as arguments.
     :param flag: if False, disable gradient checkpointing.
     """
-    ckpt = ms.utils.checkpoint.checkpoint
-    if flag:
-        return ckpt(func, *inputs)
-    else:
-        return func(*inputs)
+
+    return func(*inputs)
+
+    # if flag:
+    #     ckpt = ms.utils.checkpoint.checkpoint
+    #     return ckpt(func, *inputs)
+    # else:
+    #     return func(*inputs)

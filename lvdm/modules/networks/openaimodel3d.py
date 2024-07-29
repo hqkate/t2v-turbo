@@ -9,7 +9,7 @@ from mindspore.common.initializer import (
 )
 
 from lvdm.models.utils_diffusion import timestep_embedding
-from lvdm.common import checkpoint
+from lvdm.common import checkpoint, GroupNormExtend
 from lvdm.basics import zero_module, conv_nd, linear, avg_pool_nd, normalization
 from lvdm.modules.attention import SpatialTransformer, TemporalTransformer
 
@@ -116,8 +116,12 @@ class Upsample(nn.Cell):
             x = ops.interpolate(
                 x, (x.shape[2], x.shape[3] * 2, x.shape[4] * 2), mode="nearest"
             )
+        elif self.dims == 2:
+            x = ops.interpolate(
+                x, (x.shape[2] * 2, x.shape[3] * 2), mode="nearest"
+            )
         else:
-            x = ops.interpolate(x, scale_factor=2, mode="nearest")
+            x = ops.interpolate(x, scale_factor=2.0, mode="nearest")
         if self.use_conv:
             x = self.conv(x)
         return x
@@ -225,10 +229,10 @@ class ResBlock(TimestepBlock):
         if batch_size:
             forward_batchsize = partial(self._forward, batch_size=batch_size)
             return checkpoint(
-                forward_batchsize, input_tuple, self.parameters(), self.use_checkpoint
+                forward_batchsize, input_tuple, self.get_parameters(), self.use_checkpoint
             )
         return checkpoint(
-            self._forward, input_tuple, self.parameters(), self.use_checkpoint
+            self._forward, input_tuple, self.get_parameters(), self.use_checkpoint
         )
 
     def _forward(
@@ -259,12 +263,12 @@ class ResBlock(TimestepBlock):
         h = self.skip_connection(x) + h
 
         if self.use_temporal_conv and batch_size:
-            _, c, h, w = h.shape
-            h = h.reshape(batch_size, c, -1, h, w)
+            _, c, h_, w_ = h.shape
+            h = h.reshape(batch_size, c, -1, h_, w_)
             # h = rearrange(h, "(b t) c h w -> b c t h w", b=batch_size)
             h = self.temopral_conv(h)
-            b, c, t, h, w = x.shape
-            h = h.reshape(-1, c, h, w)
+            b, c, t, h_, w_ = h.shape
+            h = h.reshape(-1, c, h_, w_)
             # h = rearrange(h, "b c t h w -> (b t) c h w")
         return h
 
@@ -287,24 +291,24 @@ class TemporalConvBlock(nn.Cell):
 
         # conv layers
         self.conv1 = nn.SequentialCell(
-            nn.GroupNorm(32, in_channels),
+            GroupNormExtend(32, in_channels),
             nn.SiLU(),
             nn.Conv3d(in_channels, out_channels, kernel_shape, padding=padding_shape, pad_mode="pad", has_bias=True),
         )
         self.conv2 = nn.SequentialCell(
-            nn.GroupNorm(32, out_channels),
+            GroupNormExtend(32, out_channels),
             nn.SiLU(),
             nn.Dropout(p=dropout),
             nn.Conv3d(out_channels, in_channels, kernel_shape, padding=padding_shape, pad_mode="pad", has_bias=True),
         )
         self.conv3 = nn.SequentialCell(
-            nn.GroupNorm(32, out_channels),
+            GroupNormExtend(32, out_channels),
             nn.SiLU(),
             nn.Dropout(p=dropout),
             nn.Conv3d(out_channels, in_channels, (3, 1, 1), padding=(1, 1, 0, 0, 0, 0), pad_mode="pad", has_bias=True),
         )
         self.conv4 = nn.SequentialCell(
-            nn.GroupNorm(32, out_channels),
+            GroupNormExtend(32, out_channels),
             nn.SiLU(),
             nn.Dropout(p=dropout),
             nn.Conv3d(out_channels, in_channels, (3, 1, 1), padding=(1, 1, 0, 0, 0, 0), pad_mode="pad", has_bias=True),
@@ -723,7 +727,7 @@ class UNetModel(nn.Cell):
 
         h = self.middle_block(h, emb, context=context, batch_size=b)
         for module in self.output_blocks:
-            h = ops.cat([h, hs.pop()], dim=1)
+            h = ops.cat([h, hs.pop()], axis=1)
             h = module(h, emb, context=context, batch_size=b)
         h = h.type(x.dtype)
         y = self.out(h)

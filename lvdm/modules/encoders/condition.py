@@ -302,14 +302,15 @@ class FrozenOpenCLIPEmbedder(AbstractEncoder):
 
     def construct(self, text):
         tokens = self.tokenizer(text, padding="max_length", max_length=77)["input_ids"]
+        tokens = ms.Tensor(tokens, ms.int32).unsqueeze(0)
         z = self.encode_with_transformer(tokens)
         return z
 
-    def encode_with_transformer(self, text):
-        x = self.model.token_embedding(text)  # [batch_size, n_ctx, d_model]
+    def encode_with_transformer(self, tokens):
+        x = self.model.token_embedding(tokens)  # [batch_size, n_ctx, d_model]
         x = x + self.model.positional_embedding
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.text_transformer_forward(x, attn_mask=self.model.attn_mask)
+        x = x = self.model.transformer(x) # TODO!!: self.text_transformer_forward(x, attn_mask=self.model.attn_mask)
         x = x.permute(1, 0, 2)  # LND -> NLD
         x = self.model.ln_final(x)
         return x
