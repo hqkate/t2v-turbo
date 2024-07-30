@@ -110,7 +110,7 @@ def init_env(
         )
 
     if global_bf16:
-        ms.set_context(ascend_config={"precidion_mode": "allow_mix_precision_bf16"})
+        ms.set_context(ascend_config={"precision_mode": "allow_mix_precision_bf16"})
 
     return rank_id, device_num
 
@@ -147,19 +147,19 @@ def main(args):
     # if not os.path.exists(MODEL_CACHE):
     #     download_weights(MODEL_URL, MODEL_CACHE)
 
-    base_model_dir = os.path.join(MODEL_CACHE, "VideoCrafter2_model.ckpt")
+    base_model_dir = os.path.join(MODEL_CACHE, "t2v_VC2.ckpt")
     unet_dir = os.path.join(MODEL_CACHE, "unet_lora.pt")
 
     config = OmegaConf.load(args.config)
     model_config = config.pop("model", OmegaConf.create())
     pretrained_t2v = instantiate_from_config(model_config)
-    # pretrained_t2v = load_model_checkpoint(pretrained_t2v, base_model_dir)
+    pretrained_t2v = load_model_checkpoint(pretrained_t2v, base_model_dir)
     pretrained_t2v.to_float(dtype)
 
     unet_config = model_config["params"]["unet_config"]
     unet_config["params"]["time_cond_proj_dim"] = 256
     unet = instantiate_from_config(unet_config)
-    # ms.load_param_into_net(unet, pretrained_t2v.model.diffusion_model.parameters_dict(), False)
+    ms.load_param_into_net(unet, pretrained_t2v.model.diffusion_model.parameters_dict(), False)
     unet.to_float(dtype)
 
     use_unet_lora = True
