@@ -375,7 +375,7 @@ def tuple_type(s):
 
 def load_model_checkpoint(model, ckpt):
     def load_checkpoint(model, ckpt, full_strict):
-        state_dict = ms.load_checkpoint(ckpt, map_location="cpu")
+        state_dict = ms.load_checkpoint(ckpt)
         param_not_load, _ = ms.load_param_into_net(model, state_dict, strict_load=full_strict)
         if param_not_load:
             print("param_not_load: ", param_not_load)

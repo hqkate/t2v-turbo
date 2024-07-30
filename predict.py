@@ -20,6 +20,7 @@ from mindone.utils.logger import set_logger
 from mindone.utils.seed import set_random_seed
 from mindone.visualize.videos import save_videos
 from mindone.utils.config import str2bool
+from mindone.utils.amp import auto_mixed_precision
 
 from utils.lora import collapse_lora, monkeypatch_remove_lora
 from utils.common_utils import load_model_checkpoint
@@ -49,6 +50,7 @@ def init_env(
     max_device_memory: str = None,
     device_target: str = "Ascend",
     jit_level: str = "O0",
+    global_bf16: bool = False,
     debug: bool = False,
 ):
     """
@@ -107,6 +109,9 @@ def init_env(
             "please ensure the MindSpore version >= ms2.3_0615, and use GRAPH_MODE."
         )
 
+    if global_bf16:
+        ms.set_context(ascend_config={"precidion_mode": "allow_mix_precision_bf16"})
+
     return rank_id, device_num
 
 
@@ -119,6 +124,9 @@ def main(args):
     os.makedirs(save_dir, exist_ok=True)
     set_logger(name="", output_dir=save_dir)
 
+    dtype_map = {"fp32": ms.float32, "fp16": ms.float16, "bf16": ms.bfloat16}
+    dtype = dtype_map[args.dtype]
+
     latent_dir = os.path.join(args.output_path, "denoised_latents")
     if args.save_latent:
         os.makedirs(latent_dir, exist_ok=True)
@@ -130,6 +138,7 @@ def main(args):
         args.use_parallel,
         device_target=args.device_target,
         jit_level=args.jit_level,
+        global_bf16=args.global_bf16,
         debug=args.debug,
     )
 
@@ -144,13 +153,14 @@ def main(args):
     config = OmegaConf.load(args.config)
     model_config = config.pop("model", OmegaConf.create())
     pretrained_t2v = instantiate_from_config(model_config)
-    pretrained_t2v = load_model_checkpoint(pretrained_t2v, base_model_dir)
+    # pretrained_t2v = load_model_checkpoint(pretrained_t2v, base_model_dir)
+    pretrained_t2v.to_float(dtype)
 
     unet_config = model_config["params"]["unet_config"]
     unet_config["params"]["time_cond_proj_dim"] = 256
     unet = instantiate_from_config(unet_config)
-
-    ms.load_param_into_net(unet, pretrained_t2v.model.diffusion_model.parameters_dict(), False)
+    # ms.load_param_into_net(unet, pretrained_t2v.model.diffusion_model.parameters_dict(), False)
+    unet.to_float(dtype)
 
     use_unet_lora = True
     lora_manager = LoraHandler(
@@ -177,7 +187,21 @@ def main(args):
         linear_end=model_config["params"]["linear_end"],
     )
     pipeline = T2VTurboVC2Pipeline(pretrained_t2v, scheduler, model_config)
-    # pipeline.to(ms.float16)
+    pipeline.to(dtype)
+
+    # 2.1 amp
+    if args.dtype not in ["fp32", "bf16"]:
+        amp_level = "O2"
+        if not args.global_bf16:
+            pipeline = auto_mixed_precision(
+                pipeline,
+                amp_level=amp_level,
+                dtype=dtype_map[args.dtype],
+                custom_fp32_cells=[nn.GroupNorm] if args.keep_gn_fp32 else [],
+            )
+        logger.info(f"Set mixed precision to O2 with dtype={args.dtype}")
+    else:
+        amp_level = "O0"
 
     # 3. inference
     generator = np.random.Generator(np.random.PCG64(args.seed))
@@ -194,7 +218,7 @@ def main(args):
 
     # 4. post-processing
 
-    video = result[0] # result -> (1, 3, 16, 320, 512)
+    video = result[0]  # result -> (1, 3, 16, 320, 512)
     video = ops.clamp(video.float(), -1.0, 1.0)
     video = video.permute(1, 0, 2, 3)
     video = (video + 1.0) / 2.0
@@ -216,7 +240,32 @@ def parse_args():
         type=str,
         help="path to load a config yaml file that describes the setting which will override the default arguments",
     )
-    parser.add_argument("--image_size", type=int, default=256, nargs="+", help="image size in [256, 512]")
+    parser.add_argument(
+        "--dtype",
+        default="fp32",
+        type=str,
+        choices=["bf16", "fp16", "fp32"],
+        help="what data type to use for latte. Default is `fp32`, which corresponds to ms.float16",
+    )
+    parser.add_argument(
+        "--global_bf16",
+        default=False,
+        type=str2bool,
+        help="Experimental. If True, dtype will be overrided, operators will be computered in bf16 if they are supported by CANN",
+    )
+    parser.add_argument(
+        "--keep_gn_fp32",
+        default=True,
+        type=str2bool,
+        help="whether to keep GrounpNorm in fp32",
+    )
+    parser.add_argument(
+        "--image_size",
+        type=int,
+        default=256,
+        nargs="+",
+        help="image size in [256, 512]",
+    )
     parser.add_argument("--num_frames", type=int, default=16, help="number of frames")
     parser.add_argument(
         "--jit_level",
@@ -228,13 +277,20 @@ def parse_args():
         "O1: Using commonly used optimizations and automatic operator fusion optimizations, adopt KernelByKernel execution mode."
         "O2: Ultimate performance optimization, adopt Sink execution mode.",
     )
-    parser.add_argument("--guidance_scale", type=float, default=8.5, help="the scale for classifier-free guidance")
+    parser.add_argument(
+        "--guidance_scale",
+        type=float,
+        default=8.5,
+        help="the scale for classifier-free guidance",
+    )
     parser.add_argument(
         "--guidance_channels",
         type=int,
         help="How many channels to use for classifier-free diffusion. If None, use half of the latent channels",
     )
-    parser.add_argument("--num_inference_steps", type=int, default=4, help="Number of denoising steps")   
+    parser.add_argument(
+        "--num_inference_steps", type=int, default=4, help="Number of denoising steps"
+    )
     parser.add_argument(
         "--frame_interval",
         default=1,
@@ -262,13 +318,29 @@ def parse_args():
     )
 
     # inputs
-    parser.add_argument("--prompt", type=str, default="A dancing cat.", help="Input prompt for generation.")
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        default="A dancing cat.",
+        help="Input prompt for generation.",
+    )
 
     # MS new args
-    parser.add_argument("--device_target", type=str, default="Ascend", help="Ascend or GPU")
-    parser.add_argument("--mode", type=int, default=0, help="Running in GRAPH_MODE(0) or PYNATIVE_MODE(1) (default=0)")
-    parser.add_argument("--use_parallel", default=False, type=str2bool, help="use parallel")
-    parser.add_argument("--debug", type=str2bool, default=False, help="Execute inference in debug mode.")
+    parser.add_argument(
+        "--device_target", type=str, default="Ascend", help="Ascend or GPU"
+    )
+    parser.add_argument(
+        "--mode",
+        type=int,
+        default=0,
+        help="Running in GRAPH_MODE(0) or PYNATIVE_MODE(1) (default=0)",
+    )
+    parser.add_argument(
+        "--use_parallel", default=False, type=str2bool, help="use parallel"
+    )
+    parser.add_argument(
+        "--debug", type=str2bool, default=False, help="Execute inference in debug mode."
+    )
     parser.add_argument("--seed", type=int, default=4, help="Inference seed")
 
     args = parser.parse_args()
