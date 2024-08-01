@@ -733,9 +733,11 @@ class UNetModel(nn.Cell):
             assert len(features_adapter) == adapter_idx, "Wrong features_adapter"
 
         h = self.middle_block(h, emb, context=context, batch_size=b)
+
         for module in self.output_blocks:
             h = ops.cat([h, hs.pop()], axis=1)
             h = module(h, emb, context=context, batch_size=b)
+
         h = h.astype(x.dtype)
         y = self.out(h)
 

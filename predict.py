@@ -183,19 +183,13 @@ def main(args):
 
     pretrained_t2v.model.diffusion_model = unet
     pretrained_t2v.set_train(False)
-    scheduler = T2VTurboScheduler(
-        linear_start=model_config["params"]["linear_start"],
-        linear_end=model_config["params"]["linear_end"],
-    )
-    pipeline = T2VTurboVC2Pipeline(pretrained_t2v, scheduler, model_config)
-    pipeline.to(dtype)
 
     # 2.1 amp
     if args.dtype not in ["fp32", "bf16"]:
         amp_level = "O2"
         if not args.global_bf16:
-            pipeline = auto_mixed_precision(
-                pipeline,
+            pretrained_t2v = auto_mixed_precision(
+                pretrained_t2v,
                 amp_level=amp_level,
                 dtype=dtype_map[args.dtype],
                 custom_fp32_cells=[nn.GroupNorm] if args.keep_gn_fp32 else [],
@@ -203,6 +197,14 @@ def main(args):
         logger.info(f"Set mixed precision to O2 with dtype={args.dtype}")
     else:
         amp_level = "O0"
+
+    # 2.2 pipeline
+    scheduler = T2VTurboScheduler(
+        linear_start=model_config["params"]["linear_start"],
+        linear_end=model_config["params"]["linear_end"],
+    )
+    pipeline = T2VTurboVC2Pipeline(pretrained_t2v, scheduler, model_config)
+    pipeline.to(dtype)
 
     # 3. inference
     generator = np.random.Generator(np.random.PCG64(args.seed))

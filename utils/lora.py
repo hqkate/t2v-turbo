@@ -330,12 +330,12 @@ def _find_modules_v2(
         else:
             ancestors = (
                 cell
-                for cell in model.cells()
+                for _, cell in model.cells_and_names()
                 if cell.__class__.__name__ in ancestor_class
             )
     else:
         # this, incase you want to naively iterate over all modules.
-        ancestors = [cell for cell in model.cells()]
+        ancestors = [cell for _, cell in model.cells_and_names()]
 
     # For each target find every linear_class module that isn't a child of a LoraInjectedLinear
     for ancestor in ancestors:
@@ -1026,8 +1026,6 @@ def monkeypatch_or_replace_lora_extended(
             down_weight.type(weight.dtype)
         )
 
-        _module._cells[name]
-
 
 def monkeypatch_or_replace_safeloras(models, safeloras):
     loras = parse_safeloras(safeloras)
@@ -1051,7 +1049,7 @@ def monkeypatch_remove_lora(model):
             weight, bias = _source.weight, _source.bias
 
             _tmp = nn.Dense(
-                _source.in_channels, _source.out_channels, bias is not None
+                _source.in_channels, _source.out_channels, has_bias=(bias is not None)
             )
 
             _tmp.weight = weight

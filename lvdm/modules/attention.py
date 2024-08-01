@@ -395,9 +395,10 @@ class SpatialTransformer(nn.Cell):
         if not self.use_linear:
             x = self.proj_in(x)
 
-        b, c, h, w = x.shape
-        x = x.reshape(b, -1, c)
         # x = rearrange(x, "b c h w -> b (h w) c").contiguous()
+        x = ops.reshape(x, (b, c, h * w))  # (b, c, h*w)
+        x = ops.transpose(x, (0, 2, 1))  # (b, h*w, c)
+
         if self.use_linear:
             x = self.proj_in(x)
         for i, block in enumerate(self.transformer_blocks):
@@ -405,9 +406,10 @@ class SpatialTransformer(nn.Cell):
         if self.use_linear:
             x = self.proj_out(x)
         
-        b, _, c = x.shape
-        x = x.reshape(b, c, h, w)
         # x = rearrange(x, "b (h w) c -> b c h w", h=h, w=w).contiguous()
+        x = ops.reshape(x, (b, h, w, c))  # (b, h, w, c)
+        x = ops.transpose(x, (0, 3, 1, 2))  # (b, c, h, w)
+
         if not self.use_linear:
             x = self.proj_out(x)
         return x + x_in
@@ -496,9 +498,8 @@ class TemporalTransformer(nn.Cell):
         x = self.norm(x)
 
         # x = rearrange(x, "b c t h w -> (b h w) c t").contiguous()
-        b, c, t, h, w = x.shape
         x = x.permute(0, 3, 4, 1, 2)
-        x = x.reshape(-1, c, t)
+        x = x.reshape(-1, x.shape[3], x.shape[4])
 
         if not self.use_linear:
             x = self.proj_in(x)
@@ -521,12 +522,11 @@ class TemporalTransformer(nn.Cell):
             for i, block in enumerate(self.transformer_blocks):
                 x = block(x, mask=mask)
             # x = rearrange(x, "(b hw) t c -> b hw t c", b=b).contiguous()
-            _, t, c = x.shape
-            x = x.reshape(b, -1, t, c)
+            x = x.reshape(b, -1, x.shape[1], x.shape[2])
         else:
             # x = rearrange(x, "(b hw) t c -> b hw t c", b=b).contiguous()
-            _, t, c = x.shape
-            x = x.reshape(b, -1, t, c)
+            x = ops.reshape(x, (b, x.shape[0] // b, x.shape[1], x.shape[2]))
+            x = ops.transpose(x, (0, 1, 3, 2))
             
             # context = rearrange(context, "(b t) l con -> b t l con", t=t).contiguous()
             _, l, con = context.shape
