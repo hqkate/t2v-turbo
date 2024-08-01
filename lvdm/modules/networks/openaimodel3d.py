@@ -10,7 +10,7 @@ from mindspore.common.initializer import (
 
 from lvdm.models.utils_diffusion import timestep_embedding
 from lvdm.common import checkpoint, GroupNormExtend
-from lvdm.basics import zero_module, conv_nd, linear, avg_pool_nd, normalization
+from lvdm.basics import zero_module, conv_nd, linear, avg_pool_nd, normalization, rearrange_in_gn5d_bs, rearrange_out_gn5d
 from lvdm.modules.attention import SpatialTransformer, TemporalTransformer
 
 
@@ -40,12 +40,10 @@ class TimestepEmbedSequential(nn.SequentialCell, TimestepBlock):
                 x = layer(x, context)
             elif isinstance(layer, TemporalTransformer):
                 # x = rearrange(x, "(b f) c h w -> b c f h w", b=batch_size)
-                _, c, h, w = x.shape
-                x = x.reshape(batch_size, c, -1, h, w)
+                x = rearrange_in_gn5d_bs(x, batch_size)
                 x = layer(x, context)
                 # x = rearrange(x, "b c f h w -> (b f) c h w")
-                b, c, f, h, w = x.shape
-                x = x.reshape(-1, c, h, w)
+                x = rearrange_out_gn5d(x)
             else:
                 x = layer(
                     x,
@@ -252,7 +250,7 @@ class ResBlock(TimestepBlock):
             h = in_conv(h)
         else:
             h = self.in_layers(x)
-        emb_out = self.emb_layers(emb).type(h.dtype)
+        emb_out = self.emb_layers(emb).astype(h.dtype)
         while len(emb_out.shape) < len(h.shape):
             emb_out = emb_out[..., None]
         if self.use_scale_shift_norm:
@@ -266,13 +264,11 @@ class ResBlock(TimestepBlock):
         h = self.skip_connection(x) + h
 
         if self.use_temporal_conv and batch_size:
-            _, c, h_, w_ = h.shape
-            h = h.reshape(batch_size, c, -1, h_, w_)
             # h = rearrange(h, "(b t) c h w -> b c t h w", b=batch_size)
+            h = rearrange_in_gn5d_bs(h, batch_size)
             h = self.temopral_conv(h)
-            b, c, t, h_, w_ = h.shape
-            h = h.reshape(-1, c, h_, w_)
             # h = rearrange(h, "b c t h w -> (b t) c h w")
+            h = rearrange_out_gn5d(h)
         return h
 
 
@@ -448,9 +444,8 @@ class UNetModel(nn.Cell):
                 )
             ]
         )
-        self.input_blocks = input_blocks
         if self.addition_attention:
-            self.init_attn = TimestepEmbedSequential(
+            init_attn = TimestepEmbedSequential(
                 TemporalTransformer(
                     model_channels,
                     n_heads=8,
@@ -520,11 +515,11 @@ class UNetModel(nn.Cell):
                                 temporal_length=temporal_length,
                             )
                         )
-                self.input_blocks.append(TimestepEmbedSequential(*layers))
+                input_blocks.append(TimestepEmbedSequential(*layers))
                 input_block_chans.append(ch)
             if level != len(channel_mult) - 1:
                 out_ch = ch
-                self.input_blocks.append(
+                input_blocks.append(
                     TimestepEmbedSequential(
                         ResBlock(
                             ch,
@@ -605,7 +600,7 @@ class UNetModel(nn.Cell):
                 dtype=dtype,
             )
         )
-        self.middle_block = TimestepEmbedSequential(*layers)
+        middle_block = TimestepEmbedSequential(*layers)
 
         output_blocks = nn.CellList([])
         for level, mult in list(enumerate(channel_mult))[::-1]:
@@ -681,6 +676,9 @@ class UNetModel(nn.Cell):
                     ds //= 2
                 output_blocks.append(TimestepEmbedSequential(*layers))
 
+        self.input_blocks = input_blocks
+        self.init_attn = init_attn
+        self.middle_block = middle_block
         self.output_blocks = output_blocks
 
         self.out = nn.SequentialCell(
@@ -716,11 +714,10 @@ class UNetModel(nn.Cell):
         emb = emb.repeat_interleave(repeats=t, dim=0)
 
         ## always in shape (b t) c h w, except for temporal layer
-        b, c, t, h, w = x.shape
-        x = x.reshape(-1, c, h, w)
         # x = rearrange(x, "b c t h w -> (b t) c h w")
+        x = rearrange_out_gn5d(x)
 
-        h = x.type(self.dtype)
+        h = x.astype(self.dtype)
         adapter_idx = 0
         hs = []
         for id, module in enumerate(self.input_blocks):
@@ -739,11 +736,11 @@ class UNetModel(nn.Cell):
         for module in self.output_blocks:
             h = ops.cat([h, hs.pop()], axis=1)
             h = module(h, emb, context=context, batch_size=b)
-        h = h.type(x.dtype)
+        h = h.astype(x.dtype)
         y = self.out(h)
 
         # reshape back to (b c t h w)
-        _, c, h, w = y.shape
-        y = y.reshape(b, c, -1, h, w)
         # y = rearrange(y, "(b t) c h w -> b c t h w", b=b)
+        y = rearrange_in_gn5d_bs(y, b)
+
         return y

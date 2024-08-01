@@ -89,6 +89,33 @@ def normalization(channels, num_groups=32):
     return GroupNormSpecific(num_groups, channels)
 
 
+def rearrange_in_gn5d_bs(x, b):
+    # (b*f c h w) -> (b f c h w) -> (b c f h w)
+    bf, c, h, w = x.shape
+    x = ops.reshape(x, (b, bf // b, c, h, w))
+    x = ops.transpose(x, (0, 2, 1, 3, 4))
+
+    return x
+
+
+def rearrange_in_gn5d(x, video_length):
+    # (b*f c h w) -> (b f c h w) -> (b c f h w) for GN5D
+    bf, c, h, w = x.shape
+    x = ops.reshape(x, (bf // video_length, video_length, c, h, w))
+    x = ops.transpose(x, (0, 2, 1, 3, 4))
+
+    return x
+
+
+def rearrange_out_gn5d(x):
+    # (b c f h w) -> (b f c h w) -> (b*f c h w)
+    b, c, f, h, w = x.shape
+    x = ops.transpose(x, (0, 2, 1, 3, 4))
+    x = ops.reshape(x, (-1, c, h, w))
+
+    return x
+
+
 class HybridConditioner(nn.Cell):
 
     def __init__(self, c_concat_config, c_crossattn_config):

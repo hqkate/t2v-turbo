@@ -182,6 +182,7 @@ def main(args):
     monkeypatch_remove_lora(unet)
 
     pretrained_t2v.model.diffusion_model = unet
+    pretrained_t2v.set_train(False)
     scheduler = T2VTurboScheduler(
         linear_start=model_config["params"]["linear_start"],
         linear_end=model_config["params"]["linear_end"],
@@ -280,7 +281,7 @@ def parse_args():
     parser.add_argument(
         "--guidance_scale",
         type=float,
-        default=8.5,
+        default=7.5,
         help="the scale for classifier-free guidance",
     )
     parser.add_argument(

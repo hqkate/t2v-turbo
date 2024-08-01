@@ -78,14 +78,14 @@ class LoraInjectedLinear(nn.Cell):
         )
 
     def realize_as_lora(self):
-        return self.lora_up.weight.data * self.scale, self.lora_down.weight.data
+        return self.lora_up.weight.value() * self.scale, self.lora_down.weight.value()
 
     def set_selector_from_diag(self, diag: ms.Tensor):
         # diag is a 1D tensor of size (r,)
         assert diag.shape == (self.r,)
         self.selector = nn.Dense(self.r, self.r, has_bias=False)
         self.selector.weight.data = ops.diag(diag)
-        self.selector.weight.data = self.selector.weight.data.to(self.lora_up.weight.dtype)
+        self.selector.weight.data = self.selector.weight.value().to(self.lora_up.weight.dtype)
 
 
 class LoraInjectedConv2d(nn.Cell):
@@ -169,7 +169,7 @@ class LoraInjectedConv2d(nn.Cell):
         )
 
     def realize_as_lora(self):
-        return self.lora_up.weight.data * self.scale, self.lora_down.weight.data
+        return self.lora_up.weight.value() * self.scale, self.lora_down.weight.value()
 
     def set_selector_from_diag(self, diag: ms.Tensor):
         # diag is a 1D tensor of size (r,)
@@ -185,7 +185,7 @@ class LoraInjectedConv2d(nn.Cell):
         self.selector.weight.data = ops.diag(diag)
 
         # same dtype as lora_up
-        self.selector.weight.data = self.selector.weight.data.to(self.lora_up.weight.dtype)
+        self.selector.weight.data = self.selector.weight.value().to(self.lora_up.weight.dtype)
 
 
 class LoraInjectedConv3d(nn.Cell):
@@ -256,7 +256,7 @@ class LoraInjectedConv3d(nn.Cell):
         )
 
     def realize_as_lora(self):
-        return self.lora_up.weight.data * self.scale, self.lora_down.weight.data
+        return self.lora_up.weight.value() * self.scale, self.lora_down.weight.value()
 
     def set_selector_from_diag(self, diag: ms.Tensor):
         # diag is a 1D tensor of size (r,)
@@ -272,7 +272,7 @@ class LoraInjectedConv3d(nn.Cell):
         self.selector.weight.data = ops.diag(diag)
 
         # same dtype as lora_up
-        self.selector.weight.data = self.selector.weight.data.to(self.lora_up.weight.dtype)
+        self.selector.weight.data = self.selector.weight.value().to(self.lora_up.weight.dtype)
 
 
 UNET_DEFAULT_TARGET_REPLACE = {"CrossAttention", "Attention", "GEGLU"}
@@ -839,11 +839,11 @@ def collapse_lora(
             print("Collapsing Lin Lora in", name)
 
             _child_module.linear.weight = ms.Parameter(
-                _child_module.linear.weight.data
+                _child_module.linear.weight.value()
                 + alpha
                 * (
-                    _child_module.lora_up.weight.data
-                    @ _child_module.lora_down.weight.data
+                    _child_module.lora_up.weight.value()
+                    @ _child_module.lora_down.weight.value()
                 )
                 .type(_child_module.linear.weight.dtype)
             )
@@ -851,13 +851,13 @@ def collapse_lora(
         else:
             print("Collapsing Conv Lora in", name)
             _child_module.conv.weight = ms.Parameter(
-                _child_module.conv.weight.data
+                _child_module.conv.weight.value()
                 + alpha
                 * (
-                    _child_module.lora_up.weight.data.flatten(start_dim=1)
-                    @ _child_module.lora_down.weight.data.flatten(start_dim=1)
+                    _child_module.lora_up.weight.value().flatten(start_dim=1)
+                    @ _child_module.lora_down.weight.value().flatten(start_dim=1)
                 )
-                .reshape(_child_module.conv.weight.data.shape)
+                .reshape(_child_module.conv.weight.value().shape)
                 .type(_child_module.conv.weight.dtype)
             )
 
@@ -1195,7 +1195,7 @@ def apply_learned_embed_in_clip(
 
         # get the id for the token and assign the embeds
         token_id = tokenizer.convert_tokens_to_ids(token)
-        text_encoder.get_input_embeddings().weight.data[token_id] = embeds
+        text_encoder.get_input_embeddings().weight.value()[token_id] = embeds
     return token
 
 
@@ -1300,8 +1300,8 @@ def inspect_lora(model):
             "LoraInjectedConv2d",
             "LoraInjectedConv3d",
         ]:
-            ups = _module.lora_up.weight.data.clone()
-            downs = _module.lora_down.weight.data.clone()
+            ups = _module.lora_up.weight.value().clone()
+            downs = _module.lora_down.weight.value().clone()
 
             wght: ms.Tensor = ups.flatten(1) @ downs.flatten(1)
 

@@ -16,7 +16,7 @@ def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
     if not repeat_only:
         half = dim // 2
         freqs = ops.exp(
-            -math.log(max_period)
+            -ops.log(ms.Tensor(max_period, ms.float32))
             * ops.arange(start=0, end=half, dtype=ms.float32)
             / half
         )
