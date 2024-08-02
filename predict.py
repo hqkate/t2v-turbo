@@ -183,6 +183,7 @@ def main(args):
 
     pretrained_t2v.model.diffusion_model = unet
     pretrained_t2v.set_train(False)
+    pretrained_t2v.to_float(dtype)
 
     # 2.1 amp
     if args.dtype not in ["fp32", "bf16"]:

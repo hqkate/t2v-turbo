@@ -548,7 +548,7 @@ class TemporalTransformer(nn.Cell):
             # x = rearrange(x, "b (h w) t c -> b c t h w", h=h, w=w).contiguous()
             x = ops.reshape(x, (x.shape[0], h, w, x.shape[2], x.shape[3]))
             x = ops.transpose(x, (0, 4, 3, 1, 2))
-        if not self.use_linear:
+        else:
             # x = rearrange(x, "b hw t c -> (b hw) c t").contiguous()
             x = ops.reshape(x, (-1, x.shape[2], x.shape[3]))
             x = ops.transpose(x, (0, 2, 1))

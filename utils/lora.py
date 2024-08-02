@@ -214,6 +214,7 @@ class LoraInjectedConv3d(nn.Cell):
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
+            has_bias=has_bias,
             padding=padding,
             pad_mode="pad",
         )
@@ -352,7 +353,7 @@ def _find_modules_v2(
                 ):
                     continue
                 # Otherwise, yield it
-                yield parent, name, cell
+                yield parent, fullname, name, cell
 
 
 _find_modules = _find_modules_v2
@@ -377,7 +378,7 @@ def inject_trainable_lora(
     if loras != None:
         loras = load_lora_from_pkl(loras, to_param=True)
 
-    for _module, name, _child_module in _find_modules(
+    for _module, fullname, name, _child_module in _find_modules(
         model, target_replace_module, search_class=[nn.Dense]
     ):
         weight = _child_module.weight
@@ -433,7 +434,7 @@ def inject_trainable_lora_extended(
     if loras != None:
         loras = load_lora_from_pkl(loras)
 
-    for _module, name, _child_module in _find_modules(
+    for _module, fullname, name, _child_module in _find_modules(
         model, target_replace_module, search_class=[nn.Dense, nn.Conv2d, nn.Conv3d]
     ):
 
@@ -446,9 +447,9 @@ def inject_trainable_lora_extended(
                 _child_module.bias is not None,
                 r=r,
             )
-            _tmp.linear.weight = weight
+            _tmp.linear.weight.set_data(weight)
             if bias is not None:
-                _tmp.linear.bias = bias
+                _tmp.linear.bias.set_data(bias)
         elif _child_module.__class__ == nn.Conv2d:
             weight = _child_module.weight
             bias = _child_module.bias
@@ -460,13 +461,13 @@ def inject_trainable_lora_extended(
                 _child_module.padding,
                 _child_module.dilation,
                 _child_module.group,
-                _child_module.bias is not None,
+                bias=_child_module.bias is not None,
                 r=r,
             )
 
-            _tmp.conv.weight = weight
+            _tmp.conv.weight.set_data(weight)
             if bias is not None:
-                _tmp.conv.bias = bias
+                _tmp.conv.bias.set_data(bias)
 
         elif _child_module.__class__ == nn.Conv3d:
             weight = _child_module.weight
@@ -480,9 +481,9 @@ def inject_trainable_lora_extended(
                 r=r,
             )
 
-            _tmp.conv.weight = weight
+            _tmp.conv.weight.set_data(weight)
             if bias is not None:
-                _tmp.conv.bias = bias
+                _tmp.conv.bias.set_data(bias)
         else:
             # ignore module which are not included in search_class
             # For example:
@@ -493,22 +494,18 @@ def inject_trainable_lora_extended(
         if bias is not None:
             _tmp.to_float(_child_module.bias.dtype)
 
+        param_prefix = fullname + "."
+        _tmp.update_parameters_name(prefix=param_prefix, recurse=True)
         _module._cells[name] = _tmp
         require_grad_params.append(_module._cells[name].lora_up.get_parameters())
         require_grad_params.append(_module._cells[name].lora_down.get_parameters())
 
         if loras != None:
             param = loras.pop(0)
-            if isinstance(param, ms.Tensor):
-                _module._cells[name].lora_up.weight = ms.Parameter(param)
-            else:
-                _module._cells[name].lora_up.weight = param
+            _module._cells[name].lora_up.weight.set_data(param)
 
             param = loras.pop(0)
-            if isinstance(param, ms.Tensor):
-                _module._cells[name].lora_down.weight = ms.Parameter(param)
-            else:
-                _module._cells[name].lora_down.weight = param
+            _module._cells[name].lora_down.weight.set_data(param)
 
             # _module._cells[name].lora_up.weight = loras.pop(0)
             # _module._cells[name].lora_down.weight = loras.pop(0)
@@ -576,7 +573,7 @@ def extract_lora_ups_down(model, target_replace_module=DEFAULT_TARGET_REPLACE):
 
     loras = []
 
-    for _m, _n, _child_module in _find_modules(
+    for _m, _fn, _n, _child_module in _find_modules(
         model,
         target_replace_module,
         search_class=[LoraInjectedLinear, LoraInjectedConv2d, LoraInjectedConv3d],
@@ -595,7 +592,7 @@ def extract_lora_as_tensor(
 
     loras = []
 
-    for _m, _n, _child_module in _find_modules(
+    for _m, _fn, _n, _child_module in _find_modules(
         model,
         target_replace_module,
         search_class=[LoraInjectedLinear, LoraInjectedConv2d, LoraInjectedConv3d],
@@ -831,34 +828,38 @@ def collapse_lora(
 ):
 
     search_class = [LoraInjectedLinear, LoraInjectedConv2d, LoraInjectedConv3d]
-    for _module, name, _child_module in _find_modules(
+    for _module, fullname, name, _child_module in _find_modules(
         model, replace_modules, search_class=search_class
     ):
 
         if isinstance(_child_module, LoraInjectedLinear):
             print("Collapsing Lin Lora in", name)
 
-            _child_module.linear.weight = ms.Parameter(
-                _child_module.linear.weight.value()
-                + alpha
-                * (
-                    _child_module.lora_up.weight.value()
-                    @ _child_module.lora_down.weight.value()
+            _child_module.linear.weight.set_data(
+                ms.Parameter(
+                    _child_module.linear.weight.value()
+                    + alpha
+                    * (
+                        _child_module.lora_up.weight.value()
+                        @ _child_module.lora_down.weight.value()
+                    )
+                    .type(_child_module.linear.weight.dtype)
                 )
-                .type(_child_module.linear.weight.dtype)
             )
 
         else:
             print("Collapsing Conv Lora in", name)
-            _child_module.conv.weight = ms.Parameter(
-                _child_module.conv.weight.value()
-                + alpha
-                * (
-                    _child_module.lora_up.weight.value().flatten(start_dim=1)
-                    @ _child_module.lora_down.weight.value().flatten(start_dim=1)
+            _child_module.conv.weight.set_data(
+                ms.Parameter(
+                    _child_module.conv.weight.value()
+                    + alpha
+                    * (
+                        _child_module.lora_up.weight.value().flatten(start_dim=1)
+                        @ _child_module.lora_down.weight.value().flatten(start_dim=1)
+                    )
+                    .reshape(_child_module.conv.weight.value().shape)
+                    .type(_child_module.conv.weight.dtype)
                 )
-                .reshape(_child_module.conv.weight.value().shape)
-                .type(_child_module.conv.weight.dtype)
             )
 
 
@@ -868,7 +869,7 @@ def monkeypatch_or_replace_lora(
     target_replace_module=DEFAULT_TARGET_REPLACE,
     r: Union[int, List[int]] = 4,
 ):
-    for _module, name, _child_module in _find_modules(
+    for _module, fullname, name, _child_module in _find_modules(
         model, target_replace_module, search_class=[nn.Dense, LoraInjectedLinear]
     ):
         _source = (
@@ -903,8 +904,6 @@ def monkeypatch_or_replace_lora(
             down_weight.type(weight.dtype)
         )
 
-        _module._cells[name]
-
 
 def monkeypatch_or_replace_lora_extended(
     model,
@@ -912,7 +911,7 @@ def monkeypatch_or_replace_lora_extended(
     target_replace_module=DEFAULT_TARGET_REPLACE,
     r: Union[int, List[int]] = 4,
 ):
-    for _module, name, _child_module in _find_modules(
+    for _module, fullname, name, _child_module in _find_modules(
         model,
         target_replace_module,
         search_class=[
@@ -1041,7 +1040,7 @@ def monkeypatch_or_replace_safeloras(models, safeloras):
 
 
 def monkeypatch_remove_lora(model):
-    for _module, name, _child_module in _find_modules(
+    for _module, fullname, name, _child_module in _find_modules(
         model, search_class=[LoraInjectedLinear, LoraInjectedConv2d, LoraInjectedConv3d]
     ):
         if isinstance(_child_module, LoraInjectedLinear):
@@ -1052,9 +1051,9 @@ def monkeypatch_remove_lora(model):
                 _source.in_channels, _source.out_channels, has_bias=(bias is not None)
             )
 
-            _tmp.weight = weight
+            _tmp.weight.set_data(weight)
             if bias is not None:
-                _tmp.bias = bias
+                _tmp.bias.set_data(bias)
 
         else:
             _source = _child_module.conv
@@ -1073,9 +1072,9 @@ def monkeypatch_remove_lora(model):
                     has_bias=bias is not None,
                 )
 
-                _tmp.weight = weight
+                _tmp.weight.set_data(weight)
                 if bias is not None:
-                    _tmp.bias = bias
+                    _tmp.bias.set_data(bias)
 
             if isinstance(_source, nn.Conv3d):
                 _tmp = nn.Conv3d(
@@ -1087,10 +1086,12 @@ def monkeypatch_remove_lora(model):
                     pad_mode=_source.pad_mode,
                 )
 
-            _tmp.weight = weight
+            _tmp.weight.set_data(weight)
             if bias is not None:
-                _tmp.bias = bias
+                _tmp.bias.set_data(bias)
 
+        param_prefix = fullname + "."
+        _tmp.update_parameters_name(prefix=param_prefix, recurse=True)
         _module._cells[name] = _tmp
 
 
@@ -1101,7 +1102,7 @@ def monkeypatch_add_lora(
     alpha: float = 1.0,
     beta: float = 1.0,
 ):
-    for _module, name, _child_module in _find_modules(
+    for _module, fullname, name, _child_module in _find_modules(
         model, target_replace_module, search_class=[LoraInjectedLinear]
     ):
         weight = _child_module.linear.weight

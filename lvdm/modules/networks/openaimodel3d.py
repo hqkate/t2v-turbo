@@ -390,7 +390,6 @@ class UNetModel(nn.Cell):
         temporal_transformer_depth=1,
         fps_cond=False,
         time_cond_proj_dim=None,
-        dtype=ms.float32,
     ):
         super(UNetModel, self).__init__()
         if num_heads == -1:
@@ -440,7 +439,7 @@ class UNetModel(nn.Cell):
         input_blocks = nn.CellList(
             [
                 TimestepEmbedSequential(
-                    conv_nd(dims, in_channels, model_channels, 3, padding=1, pad_mode="pad", has_bias=True, dtype=dtype)
+                    conv_nd(dims, in_channels, model_channels, 3, padding=1, pad_mode="pad", has_bias=True, dtype=self.dtype)
                 )
             ]
         )
@@ -476,7 +475,7 @@ class UNetModel(nn.Cell):
                         use_scale_shift_norm=use_scale_shift_norm,
                         tempspatial_aware=tempspatial_aware,
                         use_temporal_conv=temporal_conv,
-                        dtype=dtype
+                        dtype=self.dtype
                     )
                 ]
                 ch = mult * model_channels
@@ -530,11 +529,11 @@ class UNetModel(nn.Cell):
                             use_checkpoint=use_checkpoint,
                             use_scale_shift_norm=use_scale_shift_norm,
                             down=True,
-                            dtype=dtype,
+                            dtype=self.dtype,
                         )
                         if resblock_updown
                         else Downsample(
-                            ch, conv_resample, dims=dims, out_channels=out_ch, dtype=dtype
+                            ch, conv_resample, dims=dims, out_channels=out_ch, dtype=self.dtype
                         )
                     )
                 )
@@ -557,7 +556,7 @@ class UNetModel(nn.Cell):
                 use_scale_shift_norm=use_scale_shift_norm,
                 tempspatial_aware=tempspatial_aware,
                 use_temporal_conv=temporal_conv,
-                dtype=dtype,
+                dtype=self.dtype,
             ),
             SpatialTransformer(
                 ch,
@@ -597,7 +596,7 @@ class UNetModel(nn.Cell):
                 use_scale_shift_norm=use_scale_shift_norm,
                 tempspatial_aware=tempspatial_aware,
                 use_temporal_conv=temporal_conv,
-                dtype=dtype,
+                dtype=self.dtype,
             )
         )
         middle_block = TimestepEmbedSequential(*layers)
@@ -617,7 +616,7 @@ class UNetModel(nn.Cell):
                         use_scale_shift_norm=use_scale_shift_norm,
                         tempspatial_aware=tempspatial_aware,
                         use_temporal_conv=temporal_conv,
-                        dtype=dtype,
+                        dtype=self.dtype,
                     )
                 ]
                 ch = model_channels * mult
@@ -668,10 +667,10 @@ class UNetModel(nn.Cell):
                             use_checkpoint=use_checkpoint,
                             use_scale_shift_norm=use_scale_shift_norm,
                             up=True,
-                            dtype=dtype
+                            dtype=self.dtype
                         )
                         if resblock_updown
-                        else Upsample(ch, conv_resample, dims=dims, out_channels=out_ch, dtype=dtype)
+                        else Upsample(ch, conv_resample, dims=dims, out_channels=out_ch, dtype=self.dtype)
                     )
                     ds //= 2
                 output_blocks.append(TimestepEmbedSequential(*layers))
@@ -684,7 +683,7 @@ class UNetModel(nn.Cell):
         self.out = nn.SequentialCell(
             normalization(ch),
             nn.SiLU(),
-            zero_module(conv_nd(dims, model_channels, out_channels, 3, padding=1, pad_mode="pad", has_bias=True, dtype=dtype)),
+            zero_module(conv_nd(dims, model_channels, out_channels, 3, padding=1, pad_mode="pad", has_bias=True, dtype=self.dtype)),
         )
 
     def construct(
@@ -697,7 +696,7 @@ class UNetModel(nn.Cell):
         timestep_cond=None,
         **kwargs
     ):
-        t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)
+        t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False, dtype=self.dtype)
         if timestep_cond is not None:
             t_emb = t_emb + self.time_cond_proj(timestep_cond)
         emb = self.time_embed(t_emb)
@@ -705,7 +704,7 @@ class UNetModel(nn.Cell):
         if self.fps_cond:
             if type(fps) == int:
                 fps = ops.full_like(timesteps, fps)
-            fps_emb = timestep_embedding(fps, self.model_channels, repeat_only=False)
+            fps_emb = timestep_embedding(fps, self.model_channels, repeat_only=False, dtype=self.dtype)
             emb += self.fps_embedding(fps_emb)
 
         b, _, t, _, _ = x.shape

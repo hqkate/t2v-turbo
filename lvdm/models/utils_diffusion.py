@@ -4,7 +4,7 @@ import mindspore as ms
 from mindspore import ops
 
 
-def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
+def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False, dtype=ms.float32):
     """
     Create sinusoidal timestep embeddings.
     :param timesteps: a 1-D Tensor of N indices, one per batch element.
@@ -16,8 +16,8 @@ def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False):
     if not repeat_only:
         half = dim // 2
         freqs = ops.exp(
-            -ops.log(ms.Tensor(max_period, ms.float32))
-            * ops.arange(start=0, end=half, dtype=ms.float32)
+            -ops.log(ms.Tensor(max_period, dtype))
+            * ops.arange(start=0, end=half, dtype=dtype)
             / half
         )
         args = timesteps[:, None].float() * freqs[None]
