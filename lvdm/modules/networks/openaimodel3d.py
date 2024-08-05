@@ -223,25 +223,6 @@ class ResBlock(TimestepBlock):
         :param emb: an [N x emb_channels] Tensor of timestep embeddings.
         :return: an [N x C x ...] Tensor of outputs.
         """
-        input_tuple = (
-            x,
-            emb,
-        )
-        if batch_size:
-            forward_batchsize = partial(self._forward, batch_size=batch_size)
-            return checkpoint(
-                forward_batchsize, input_tuple, self.get_parameters(), self.use_checkpoint
-            )
-        return checkpoint(
-            self._forward, input_tuple, self.get_parameters(), self.use_checkpoint
-        )
-
-    def _forward(
-        self,
-        x,
-        emb,
-        batch_size=None,
-    ):
         if self.updown:
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
             h = in_rest(x)
@@ -733,8 +714,9 @@ class UNetModel(nn.Cell):
 
         h = self.middle_block(h, emb, context=context, batch_size=b)
 
-        for module in self.output_blocks:
-            h = ops.cat([h, hs.pop()], axis=1)
+        for i, module in enumerate(self.output_blocks):
+            hs_pop = hs[-(i + 1)]
+            h = ops.cat([h, hs_pop], axis=1)
             h = module(h, emb, context=context, batch_size=b)
 
         h = h.astype(x.dtype)

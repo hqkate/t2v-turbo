@@ -53,7 +53,9 @@ def noise_like(shape, device, repeat=False):
 def default(val, d):
     if exists(val):
         return val
-    return d() if isfunction(d) else d
+    if isinstance(d, (ms.Tensor, int, float)):
+        return d
+    return d()
 
 
 def exists(val):

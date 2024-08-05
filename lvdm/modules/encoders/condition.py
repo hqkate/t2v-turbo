@@ -281,7 +281,6 @@ class FrozenOpenCLIPEmbedder(AbstractEncoder):
         model = load_clip_model(arch, pretrained_ckpt_path, str(self.dtype).lower())
         del model.visual
 
-        self.tokenizer = load_ckpt_tokenizer(tokenizer_path)
         self.model = model
 
         self.max_length = max_length
@@ -300,9 +299,9 @@ class FrozenOpenCLIPEmbedder(AbstractEncoder):
         for param in self.get_parameters():
             param.requires_grad = False
 
-    def construct(self, text):
-        tokens = self.tokenizer(text, padding="max_length", max_length=77)["input_ids"]
-        tokens = ms.Tensor(tokens, ms.int32).unsqueeze(0)
+    def construct(self, tokens):
+        # tokens = self.tokenizer(text, padding="max_length", max_length=77)["input_ids"]
+        # tokens = ms.Tensor(tokens, ms.int32).unsqueeze(0)
         z = self.encode_with_transformer(tokens)
         return z
 

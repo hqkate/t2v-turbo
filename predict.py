@@ -1,7 +1,7 @@
 # Prediction interface for Cog ⚙️
 # https://cog.run/python
 
-import os
+import os, sys
 import argparse
 import datetime
 import subprocess
@@ -29,6 +29,8 @@ from utils.lora_handler import LoraHandler
 from scheduler.t2v_turbo_scheduler import T2VTurboScheduler
 from pipeline.t2v_turbo_vc2_pipeline import T2VTurboVC2Pipeline
 
+sys.path.append("./mindone/examples/stable_diffusion_xl")
+from gm.modules.embedders.open_clip.tokenizer import tokenize
 
 logger = logging.getLogger(__name__)
 MODEL_URL = "https://weights.replicate.delivery/default/Ji4chenLi/t2v-turbo.tar"
@@ -210,8 +212,12 @@ def main(args):
     # 3. inference
     generator = np.random.Generator(np.random.PCG64(args.seed))
 
+    # 3.1 tokenize
+    tokens, _ = tokenize(args.prompt)
+    tokens = ms.Tensor(np.array(tokens, dtype=np.int32))
+
     result = pipeline(
-        prompt=args.prompt,
+        prompt=tokens,
         frames=args.num_frames,
         fps=args.fps,
         guidance_scale=args.guidance_scale,

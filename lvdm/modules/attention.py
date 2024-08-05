@@ -121,9 +121,11 @@ class CrossAttention(nn.Cell):
 
     def construct(self, x, context=None, mask=None):
         h = self.heads
-
         q = self.to_q(x)
         context = default(context, x)
+
+        k_ip, v_ip, out_ip = None, None, None
+
         ## considering image token additionally
         if context is not None and self.img_cross_attention:
             context, context_img = (
@@ -154,7 +156,6 @@ class CrossAttention(nn.Cell):
             # sim2 = einsum("b t d, t s d -> b t s", q, k2) * self.scale  # TODO check
             sim2 = ops.matmul(q, ops.transpose(k2, (0, 2, 1))) * self.scale
             sim += sim2
-        del k
 
         if exists(mask):
             ## feasible for causal attention mask only
@@ -186,14 +187,12 @@ class CrossAttention(nn.Cell):
             v_ip = self._rearrange_in(v_ip, h)
             # sim_ip = einsum("b i d, b j d -> b i j", q, k_ip) * self.scale
             sim_ip = ops.matmul(q, ops.transpose(k_ip, (0, 2, 1))) * self.scale
-            del k_ip
             sim_ip = sim_ip.softmax(axis=-1)
             # out_ip = einsum("b i j, b j d -> b i d", sim_ip, v_ip)
             out_ip = ops.matmul(sim_ip, v_ip)
             # out_ip = rearrange(out_ip, "(b h) n d -> b n (h d)", h=h)
             out_ip = self._rearrange_out(out_ip, h)
             out = out + self.image_cross_attention_scale * out_ip
-        del q
 
         return self.to_out(out)
 
@@ -300,22 +299,6 @@ class BasicTransformerBlock(nn.Cell):
         self.checkpoint = checkpoint
 
     def construct(self, x, context=None, mask=None):
-        ## implementation tricks: because checkpointing doesn't support non-tensor (e.g. None or scalar) arguments
-        input_tuple = (
-            x,
-        )  ## should not be (x), otherwise *input_tuple will decouple x into multiple arguments
-        if context is not None:
-            input_tuple = (x, context)
-        if mask is not None:
-            forward_mask = partial(self._forward, mask=mask)
-            return checkpoint(forward_mask, (x,), self.get_parameters(), self.checkpoint)
-        if context is not None and mask is not None:
-            input_tuple = (x, context, mask)
-        return checkpoint(
-            self._forward, input_tuple, self.get_parameters(), self.checkpoint
-        )
-
-    def _forward(self, x, context=None, mask=None):
         x = (
             self.attn1(
                 self.norm1(x),

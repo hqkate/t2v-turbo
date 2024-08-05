@@ -120,7 +120,7 @@ class T2VTurboVC2Pipeline(DiffusionPipeline):
 
     def __call__(
         self,
-        prompt: Union[str, List[str]] = None,
+        prompt: Union[str, List[str], ms.Tensor] = None,
         height: Optional[int] = 320,
         width: Optional[int] = 512,
         frames: int = 16,
@@ -142,6 +142,8 @@ class T2VTurboVC2Pipeline(DiffusionPipeline):
         if prompt is not None and isinstance(prompt, str):
             batch_size = 1
         elif prompt is not None and isinstance(prompt, list):
+            batch_size = len(prompt)
+        elif prompt is not None and isinstance(prompt, ms.Tensor):
             batch_size = len(prompt)
         else:
             batch_size = prompt_embeds.shape[0]

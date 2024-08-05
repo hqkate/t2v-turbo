@@ -205,13 +205,15 @@ class DDPM(nn.Cell):
             self.model_ema.copy_to(self.model)
             if context is not None:
                 mainlogger.info(f"{context}: Switched to EMA weights")
-        try:
-            yield None
-        finally:
-            if self.use_ema:
-                self.model_ema.restore(self.model.get_parameters())
-                if context is not None:
-                    mainlogger.info(f"{context}: Restored training weights")
+
+        yield None
+        # try:
+        #     yield None
+        # finally:
+        #     if self.use_ema:
+        #         self.model_ema.restore(self.model.get_parameters())
+        #         if context is not None:
+        #             mainlogger.info(f"{context}: Restored training weights")
 
     def init_from_ckpt(self, path, ignore_keys=list(), only_model=False):
         sd = ms.load_checkpoint(path, map_location="cpu")
@@ -441,10 +443,8 @@ class LatentDiffusion(DDPM):
             to_ms = partial(ms.Tensor, dtype=self.dtype)
             self.scale_arr = to_ms(scale_arr)
 
-        try:
-            self.num_downs = len(first_stage_config.params.ddconfig.ch_mult) - 1
-        except:
-            self.num_downs = 0
+        self.num_downs = len(first_stage_config.params.ddconfig.ch_mult) - 1
+
         if not scale_by_std:
             self.scale_factor = scale_factor
         else:
