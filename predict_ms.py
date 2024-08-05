@@ -21,19 +21,18 @@ from mindone.visualize.videos import save_videos
 from mindone.utils.config import str2bool
 from mindone.utils.amp import auto_mixed_precision
 
-from utils.lora import collapse_lora, monkeypatch_remove_lora
-from utils.common_utils import load_model_checkpoint
-from utils.utils import instantiate_from_config
-from utils.lora_handler import LoraHandler
-from scheduler.t2v_turbo_scheduler import T2VTurboScheduler
-from pipeline.t2v_turbo_vc2_pipeline import T2VTurboVC2Pipeline
+from transformers import CLIPTokenizer
+from mindone.transformers import CLIPTextModel
+from mindone.diffusers import AutoencoderKL, UNet3DConditionModel
 
-sys.path.append("./mindone/examples/stable_diffusion_xl")
-from gm.modules.embedders.open_clip.tokenizer import tokenize
+from utils.lora import collapse_lora, monkeypatch_remove_lora
+from utils.lora_handler import LoraHandler
+from utils.common_utils import set_torch_2_attn
+from scheduler.t2v_turbo_scheduler import T2VTurboScheduler
+from pipeline.t2v_turbo_ms_pipeline import T2VTurboMSPipeline
+
 
 logger = logging.getLogger(__name__)
-MODEL_URL = "https://weights.replicate.delivery/default/Ji4chenLi/t2v-turbo.tar"
-MODEL_CACHE = "checkpoints"
 
 
 def download_weights(url, dest):
@@ -145,46 +144,43 @@ def main(args):
 
     # 2. model initiate and weight loading
 
-    # if not os.path.exists(MODEL_CACHE):
-    #     download_weights(MODEL_URL, MODEL_CACHE)
+    pretrained_model_path = "ali-vilab/text-to-video-ms-1.7b"
+    tokenizer = CLIPTokenizer.from_pretrained(
+        pretrained_model_path, subfolder="tokenizer"
+    )
+    text_encoder = CLIPTextModel.from_pretrained(
+        pretrained_model_path, subfolder="text_encoder"
+    )
+    vae = AutoencoderKL.from_pretrained(pretrained_model_path, subfolder="vae")
+    teacher_unet = UNet3DConditionModel.from_pretrained(
+        pretrained_model_path, subfolder="unet"
+    )
 
-    base_model_dir = os.path.join(MODEL_CACHE, "t2v_VC2.ckpt")
-    unet_dir = os.path.join(MODEL_CACHE, "unet_lora.pt")
-
-    config = OmegaConf.load(args.config)
-    model_config = config.pop("model", OmegaConf.create())
-    pretrained_t2v = instantiate_from_config(model_config)
-    pretrained_t2v = load_model_checkpoint(pretrained_t2v, base_model_dir)
-    pretrained_t2v.to_float(dtype)
-
-    unet_config = model_config["params"]["unet_config"]
-    unet_config["params"]["time_cond_proj_dim"] = 256
-    unet = instantiate_from_config(unet_config)
-    ms.load_param_into_net(unet, pretrained_t2v.model.diffusion_model.parameters_dict(), False)
-    unet.to_float(dtype)
-
+    time_cond_proj_dim = 256
+    unet = UNet3DConditionModel.from_config(
+        teacher_unet.config, time_cond_proj_dim=time_cond_proj_dim
+    )
+    # load teacher_unet weights into unet
+    unet.load_state_dict(teacher_unet.state_dict(), strict=False)
+    del teacher_unet
+    set_torch_2_attn(unet)
     use_unet_lora = True
     lora_manager = LoraHandler(
         version="cloneofsimo",
         use_unet_lora=use_unet_lora,
         save_for_webui=True,
-        unet_replace_modules=["UNetModel"],
     )
     lora_manager.add_lora_to_model(
         use_unet_lora,
         unet,
         lora_manager.unet_replace_modules,
-        lora_path=unet_dir,
+        lora_path=args.unet_dir,
         dropout=0.1,
-        r=64,
+        r=32,
     )
-    unet.set_train(False)
     collapse_lora(unet, lora_manager.unet_replace_modules)
     monkeypatch_remove_lora(unet)
-
-    pretrained_t2v.model.diffusion_model = unet
-    pretrained_t2v.set_train(False)
-    pretrained_t2v.to_float(dtype)
+    unet.set_train(False)
 
     # 2.1 amp
     if args.dtype not in ["fp32", "bf16"]:
@@ -201,22 +197,21 @@ def main(args):
         amp_level = "O0"
 
     # 2.2 pipeline
-    scheduler = T2VTurboScheduler(
-        linear_start=model_config["params"]["linear_start"],
-        linear_end=model_config["params"]["linear_end"],
+    noise_scheduler = T2VTurboScheduler()
+    pipeline = T2VTurboMSPipeline(
+        unet=unet,
+        vae=vae,
+        text_encoder=text_encoder,
+        tokenizer=tokenizer,
+        scheduler=noise_scheduler,
     )
-    pipeline = T2VTurboVC2Pipeline(pretrained_t2v, scheduler, model_config)
     pipeline.to(dtype)
 
     # 3. inference
     generator = np.random.Generator(np.random.PCG64(args.seed))
 
-    # 3.1 tokenize
-    tokens, _ = tokenize(args.prompt)
-    tokens = ms.Tensor(np.array(tokens, dtype=np.int32))
-
     result = pipeline(
-        prompt=tokens,
+        prompt=args.prompt,
         frames=args.num_frames,
         fps=args.fps,
         guidance_scale=args.guidance_scale,

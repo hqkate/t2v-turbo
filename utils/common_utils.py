@@ -9,7 +9,7 @@ from mindspore import nn, ops
 from collections import OrderedDict
 
 # from diffusers.models.attention_processor import AttnProcessor2_0
-# from diffusers.models.attention import BasicTransformerBlock
+from lvdm.modules.attention import BasicTransformerBlock
 # import wandb
 
 
@@ -31,9 +31,9 @@ def set_processors(attentions):
 def set_torch_2_attn(unet):
     optim_count = 0
 
-    for name, module in unet.named_modules():
+    for name, module in unet.cells_and_names():
         if is_attn(name):
-            if isinstance(module, ms.nn.CellList):
+            if isinstance(module, nn.CellList):
                 for m in module:
                     if isinstance(m, BasicTransformerBlock):
                         set_processors([m.attn1, m.attn2])
