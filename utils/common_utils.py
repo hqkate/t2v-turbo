@@ -8,7 +8,7 @@ from mindspore import nn, ops
 
 from collections import OrderedDict
 
-# from diffusers.models.attention_processor import AttnProcessor2_0
+from mindone.diffusers.models.attention_processor import AttnProcessor
 from lvdm.modules.attention import BasicTransformerBlock
 # import wandb
 
@@ -25,7 +25,7 @@ def is_attn(name):
 
 def set_processors(attentions):
     for attn in attentions:
-        attn.set_processor(AttnProcessor2_0())
+        attn.set_processor(AttnProcessor())
 
 
 def set_torch_2_attn(unet):

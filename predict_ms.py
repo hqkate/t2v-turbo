@@ -23,11 +23,12 @@ from mindone.utils.amp import auto_mixed_precision
 
 from transformers import CLIPTokenizer
 from mindone.transformers import CLIPTextModel
-from mindone.diffusers import AutoencoderKL, UNet3DConditionModel
+from mindone.diffusers import AutoencoderKL
 
 from utils.lora import collapse_lora, monkeypatch_remove_lora
 from utils.lora_handler import LoraHandler
 from utils.common_utils import set_torch_2_attn
+from model_scope.unet_3d_condition import UNet3DConditionModel
 from scheduler.t2v_turbo_scheduler import T2VTurboScheduler
 from pipeline.t2v_turbo_ms_pipeline import T2VTurboMSPipeline
 
@@ -161,7 +162,7 @@ def main(args):
         teacher_unet.config, time_cond_proj_dim=time_cond_proj_dim
     )
     # load teacher_unet weights into unet
-    unet.load_state_dict(teacher_unet.state_dict(), strict=False)
+    ms.load_param_into_net(unet, teacher_unet.parameters_dict(), False)
     del teacher_unet
     set_torch_2_attn(unet)
     use_unet_lora = True
@@ -186,8 +187,14 @@ def main(args):
     if args.dtype not in ["fp32", "bf16"]:
         amp_level = "O2"
         if not args.global_bf16:
-            pretrained_t2v = auto_mixed_precision(
-                pretrained_t2v,
+            unet = auto_mixed_precision(
+                unet,
+                amp_level=amp_level,
+                dtype=dtype_map[args.dtype],
+                custom_fp32_cells=[nn.GroupNorm] if args.keep_gn_fp32 else [],
+            )
+            vae = auto_mixed_precision(
+                vae,
                 amp_level=amp_level,
                 dtype=dtype_map[args.dtype],
                 custom_fp32_cells=[nn.GroupNorm] if args.keep_gn_fp32 else [],
@@ -213,7 +220,6 @@ def main(args):
     result = pipeline(
         prompt=args.prompt,
         frames=args.num_frames,
-        fps=args.fps,
         guidance_scale=args.guidance_scale,
         num_inference_steps=args.num_inference_steps,
         num_videos_per_prompt=1,
@@ -243,6 +249,12 @@ def parse_args():
         default="configs/inference_t2v_512_v2.0.yaml",
         type=str,
         help="path to load a config yaml file that describes the setting which will override the default arguments",
+    )
+    parser.add_argument(
+        "--unet_dir",
+        default="./checkpoints/unet_lora.pt",
+        type=str,
+        help="path to lora weights",
     )
     parser.add_argument(
         "--dtype",
@@ -325,7 +337,7 @@ def parse_args():
     parser.add_argument(
         "--prompt",
         type=str,
-        default="A dancing cat.",
+        default="With the style of low-poly game art, A majestic, white horse gallops gracefully across a moonlit beach.",
         help="Input prompt for generation.",
     )
 

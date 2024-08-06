@@ -5,14 +5,16 @@ import numpy as np
 import mindspore as ms
 from mindspore import ops
 
+from transformers import CLIPTokenizer
+
 from mindone.diffusers import DiffusionPipeline
 from mindone.diffusers.utils.mindspore_utils import randn_tensor
 from mindone.diffusers import AutoencoderKL
-from transformers import CLIPTokenizer, CLIPTextModel
+from mindone.transformers import CLIPTextModel
 from scheduler.t2v_turbo_scheduler import T2VTurboScheduler
 
 
-logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+logger = logging.getLogger(__name__)
 
 
 class T2VTurboMSPipeline(DiffusionPipeline):
@@ -68,7 +70,7 @@ class T2VTurboMSPipeline(DiffusionPipeline):
 
         bs_embed, seq_len, _ = prompt_embeds.shape
         # duplicate text embeddings for each generation per prompt, using mps friendly method
-        prompt_embeds = prompt_embeds.repeat(1, num_videos_per_prompt, 1)
+        prompt_embeds = prompt_embeds.repeat(num_videos_per_prompt, 1)
         prompt_embeds = prompt_embeds.view(
             bs_embed * num_videos_per_prompt, seq_len, -1
         )
@@ -144,6 +146,7 @@ class T2VTurboMSPipeline(DiffusionPipeline):
         # 2. Define call parameters
         if prompt is not None and isinstance(prompt, str):
             batch_size = 1
+            prompt = [prompt]
         elif prompt is not None and isinstance(prompt, list):
             batch_size = len(prompt)
         else:
@@ -193,6 +196,7 @@ class T2VTurboMSPipeline(DiffusionPipeline):
                     ts,
                     timestep_cond=w_embedding,
                     encoder_hidden_states=prompt_embeds.float(),
+                    return_dict=True,
                 ).sample
                 # compute the previous noisy sample x_t -> x_t-1
                 latents, denoised = self.scheduler.step(
