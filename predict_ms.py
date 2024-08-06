@@ -163,8 +163,10 @@ def main(args):
     )
     # load teacher_unet weights into unet
     ms.load_param_into_net(unet, teacher_unet.parameters_dict(), False)
+    unet.to_float(dtype)
     del teacher_unet
     set_torch_2_attn(unet)
+
     use_unet_lora = True
     lora_manager = LoraHandler(
         version="cloneofsimo",

@@ -18,8 +18,8 @@ import mindspore as ms
 from mindspore import nn, ops
 
 from mindone.diffusers.utils import logging
-from mindone.diffusers.attention import Attention
-from mindone.diffusers.resnet import Downsample2D, ResnetBlock2D, SpatioTemporalResBlock, TemporalConvLayer, Upsample2D
+from mindone.diffusers.models.attention import Attention
+from mindone.diffusers.models.resnet import Downsample2D, ResnetBlock2D, SpatioTemporalResBlock, TemporalConvLayer, Upsample2D
 from mindone.diffusers.models.transformers.dual_transformer_2d import DualTransformer2DModel
 from mindone.diffusers.models.transformers.transformer_2d import Transformer2DModel
 from mindone.diffusers.models.transformers.transformer_temporal import TransformerSpatioTemporalModel, TransformerTemporalModel
