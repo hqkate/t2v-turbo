@@ -159,11 +159,10 @@ def main(args):
 
     time_cond_proj_dim = 256
     unet = UNet3DConditionModel.from_config(
-        teacher_unet.config, time_cond_proj_dim=time_cond_proj_dim
+        teacher_unet.config, time_cond_proj_dim=time_cond_proj_dim, dtype=dtype
     )
     # load teacher_unet weights into unet
     ms.load_param_into_net(unet, teacher_unet.parameters_dict(), False)
-    unet.to_float(dtype)
     del teacher_unet
     set_torch_2_attn(unet)
 
@@ -214,7 +213,6 @@ def main(args):
         tokenizer=tokenizer,
         scheduler=noise_scheduler,
     )
-    pipeline.to(dtype)
 
     # 3. inference
     generator = np.random.Generator(np.random.PCG64(args.seed))
@@ -225,7 +223,6 @@ def main(args):
         guidance_scale=args.guidance_scale,
         num_inference_steps=args.num_inference_steps,
         num_videos_per_prompt=1,
-        generator=generator,
     )
 
     # 4. post-processing

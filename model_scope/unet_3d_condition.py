@@ -116,6 +116,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         cross_attention_dim: int = 1024,
         attention_head_dim: Union[int, Tuple[int]] = 64,
         num_attention_heads: Optional[Union[int, Tuple[int]]] = None,
+        dtype: ms.dtype = ms.float32,
     ):
         super().__init__()
 
@@ -215,7 +216,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 num_attention_heads=num_attention_heads[i],
                 downsample_padding=downsample_padding,
                 dual_cross_attention=False,
-            )
+            ).to_float(dtype)
             self.down_blocks.append(down_block)
         self.down_blocks = nn.CellList(self.down_blocks)
 
@@ -230,7 +231,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             num_attention_heads=num_attention_heads[-1],
             resnet_groups=norm_num_groups,
             dual_cross_attention=False,
-        )
+        ).to_float(dtype)
 
         # count how many layers upsample the images
         self.num_upsamplers = 0
@@ -271,7 +272,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 num_attention_heads=reversed_num_attention_heads[i],
                 dual_cross_attention=False,
                 resolution_idx=i,
-            )
+            ).to_float(dtype)
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
             layers_per_resnet_in_up_blocks.append(len(up_block.resnets))
@@ -424,6 +425,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         down_block_additional_residuals: Optional[Tuple[ms.Tensor]] = None,
         mid_block_additional_residual: Optional[ms.Tensor] = None,
+        dtype: ms.dtype = ms.float32,
         return_dict: bool = False,
     ) -> Union[UNet3DConditionOutput, Tuple[ms.Tensor]]:
         r"""
@@ -486,10 +488,10 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         if not ops.is_tensor(timesteps):
             # TODO: this requires sync between CPU and GPU. So try to pass timesteps as tensors if you can
             if isinstance(timestep, float):
-                dtype = ms.float64
+                t_dtype = ms.float32
             else:
-                dtype = ms.int64
-            timesteps = ms.Tensor([timesteps], dtype=dtype)
+                t_dtype = ms.int32
+            timesteps = ms.Tensor([timesteps], dtype=t_dtype)
         elif len(timesteps.shape) == 0:
             timesteps = timesteps[None]
 
@@ -520,8 +522,14 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         )[0]
 
         # 3. down
+
+        sample = sample.to(dtype)
+        emb = emb.to(dtype)
+        encoder_hidden_states = encoder_hidden_states.to(dtype)
+
         down_block_res_samples = (sample,)
         for downsample_block in self.down_blocks:
+            downsample_block.to_float(dtype)
             if downsample_block.has_cross_attention:
                 sample, res_samples = downsample_block(
                     hidden_states=sample,
@@ -548,6 +556,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             down_block_res_samples = new_down_block_res_samples
 
         # 4. mid
+        self.mid_block.to_float(dtype)
         if self.mid_block is not None:
             sample = self.mid_block(
                 sample,
@@ -563,6 +572,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
 
         # 5. up
         for i, upsample_block in enumerate(self.up_blocks):
+            upsample_block.to_float(dtype)
             is_final_block = i == len(self.up_blocks) - 1
 
             res_samples = down_block_res_samples[-self.layers_per_resnet_in_up_blocks[i] :]
@@ -592,6 +602,8 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     upsample_size=upsample_size,
                     num_frames=num_frames,
                 )
+
+        sample = sample.to(ms.float32)
 
         # 6. post-process
         if self.conv_norm_out:
