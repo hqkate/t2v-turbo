@@ -25,6 +25,7 @@ class T2VTurboMSPipeline(DiffusionPipeline):
         text_encoder: CLIPTextModel,
         tokenizer: CLIPTokenizer,
         scheduler: T2VTurboScheduler,
+        dtype=ms.float32,
     ):
         super().__init__()
 
@@ -37,6 +38,7 @@ class T2VTurboMSPipeline(DiffusionPipeline):
         )
 
         self.vae_scale_factor = 8
+        self.dtype = dtype
 
     def _encode_prompt(
         self,
@@ -196,6 +198,7 @@ class T2VTurboMSPipeline(DiffusionPipeline):
                     ts,
                     timestep_cond=w_embedding,
                     encoder_hidden_states=prompt_embeds.float(),
+                    dtype=self.dtype,
                     return_dict=True,
                 ).sample
                 # compute the previous noisy sample x_t -> x_t-1
