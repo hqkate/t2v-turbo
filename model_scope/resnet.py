@@ -1,11 +1,11 @@
 from typing import Optional
 
 import mindspore as ms
-from mindpore import nn
+from mindspore import nn
 
 from mindone.diffusers.models.normalization import GroupNorm, get_activation
 from mindone.diffusers.models.activations import SiLU
-from mindone.diffusiers.models.resnet import ResnetBlock2D, AlphaBlender
+from mindone.diffusers.models.resnet import ResnetBlock2D, AlphaBlender
 
 
 class TemporalConvLayer(nn.Cell):
