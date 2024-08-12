@@ -21,19 +21,19 @@ from mindone.visualize.videos import save_videos
 from mindone.utils.config import str2bool
 from mindone.utils.amp import auto_mixed_precision
 
-from utils.lora import collapse_lora, monkeypatch_remove_lora
-from utils.common_utils import load_model_checkpoint
-from utils.utils import instantiate_from_config
-from utils.lora_handler import LoraHandler
-from scheduler.t2v_turbo_scheduler import T2VTurboScheduler
-from pipeline.t2v_turbo_vc2_pipeline import T2VTurboVC2Pipeline
+from transformers import CLIPTokenizer
+from mindone.transformers import CLIPTextModel
+from mindone.diffusers import AutoencoderKL
 
-sys.path.append("./mindone/examples/stable_diffusion_xl")
-from gm.modules.embedders.open_clip.tokenizer import tokenize
+from utils.lora import collapse_lora, monkeypatch_remove_lora
+from utils.lora_handler import LoraHandler
+from utils.common_utils import set_torch_2_attn
+from model_scope.unet_3d_condition import UNet3DConditionModel
+from scheduler.t2v_turbo_scheduler import T2VTurboScheduler
+from pipeline.t2v_turbo_ms_pipeline import T2VTurboMSPipeline
+
 
 logger = logging.getLogger(__name__)
-MODEL_URL = "https://weights.replicate.delivery/default/Ji4chenLi/t2v-turbo.tar"
-MODEL_CACHE = "checkpoints"
 
 
 def download_weights(url, dest):
@@ -53,6 +53,7 @@ def init_env(
     jit_level: str = "O0",
     global_bf16: bool = False,
     debug: bool = False,
+    dtype: ms.dtype = ms.float32,
 ):
     """
     Initialize MindSpore environment.
@@ -112,6 +113,13 @@ def init_env(
 
     if global_bf16:
         ms.set_context(ascend_config={"precision_mode": "allow_mix_precision_bf16"})
+        logger.info("Using precision_mode: allow_mix_precision_bf16")
+    elif dtype == ms.bfloat16:
+        ms.set_context(ascend_config={"precision_mode": "allow_fp32_to_bf16"})
+        logger.info("Using precision_mode: allow_fp32_to_bf16")
+    elif dtype == ms.float16:
+        ms.set_context(ascend_config={"precision_mode": "allow_mix_precision_fp16"})
+        logger.info("Using precision_mode: allow_mix_precision_fp16")
 
     return rank_id, device_num
 
@@ -145,80 +153,82 @@ def main(args):
 
     # 2. model initiate and weight loading
 
-    # if not os.path.exists(MODEL_CACHE):
-    #     download_weights(MODEL_URL, MODEL_CACHE)
+    pretrained_model_path = "ali-vilab/text-to-video-ms-1.7b"
+    tokenizer = CLIPTokenizer.from_pretrained(
+        pretrained_model_path, subfolder="tokenizer"
+    )
+    text_encoder = CLIPTextModel.from_pretrained(
+        pretrained_model_path, subfolder="text_encoder"
+    )
+    vae = AutoencoderKL.from_pretrained(pretrained_model_path, subfolder="vae")
+    teacher_unet = UNet3DConditionModel.from_pretrained(
+        pretrained_model_path, subfolder="unet", dtype=dtype
+    )
 
-    base_model_dir = os.path.join(MODEL_CACHE, "t2v_VC2.ckpt")
-    unet_dir = os.path.join(MODEL_CACHE, "unet_lora.pt")
-
-    config = OmegaConf.load(args.config)
-    model_config = config.pop("model", OmegaConf.create())
-    pretrained_t2v = instantiate_from_config(model_config)
-    pretrained_t2v = load_model_checkpoint(pretrained_t2v, base_model_dir)
-    pretrained_t2v.to_float(dtype)
-
-    unet_config = model_config["params"]["unet_config"]
-    unet_config["params"]["time_cond_proj_dim"] = 256
-    unet = instantiate_from_config(unet_config)
-    ms.load_param_into_net(unet, pretrained_t2v.model.diffusion_model.parameters_dict(), False)
-    unet.to_float(dtype)
+    time_cond_proj_dim = 256
+    unet = UNet3DConditionModel.from_config(
+        teacher_unet.config, time_cond_proj_dim=time_cond_proj_dim, dtype=dtype
+    )
+    # load teacher_unet weights into unet
+    ms.load_param_into_net(unet, teacher_unet.parameters_dict(), False)
+    del teacher_unet
+    set_torch_2_attn(unet)
 
     use_unet_lora = True
     lora_manager = LoraHandler(
         version="cloneofsimo",
         use_unet_lora=use_unet_lora,
         save_for_webui=True,
-        unet_replace_modules=["UNetModel"],
     )
     lora_manager.add_lora_to_model(
         use_unet_lora,
         unet,
         lora_manager.unet_replace_modules,
-        lora_path=unet_dir,
+        lora_path=args.unet_dir,
         dropout=0.1,
-        r=64,
+        r=32,
     )
-    unet.set_train(False)
     collapse_lora(unet, lora_manager.unet_replace_modules)
     monkeypatch_remove_lora(unet)
-
-    pretrained_t2v.model.diffusion_model = unet
-    pretrained_t2v.set_train(False)
-    pretrained_t2v.to_float(dtype)
+    unet.set_train(False)
 
     # 2.1 amp
-    if args.dtype not in ["fp32", "bf16"]:
-        amp_level = "O2"
-        if not args.global_bf16:
-            pretrained_t2v = auto_mixed_precision(
-                pretrained_t2v,
-                amp_level=amp_level,
-                dtype=dtype_map[args.dtype],
-                custom_fp32_cells=[nn.GroupNorm] if args.keep_gn_fp32 else [],
-            )
-        logger.info(f"Set mixed precision to O2 with dtype={args.dtype}")
-    else:
-        amp_level = "O0"
+    # if args.dtype not in ["fp32", "bf16"]:
+    #     amp_level = "O2"
+    #     if not args.global_bf16:
+    #         unet = auto_mixed_precision(
+    #             unet,
+    #             amp_level=amp_level,
+    #             dtype=dtype_map[args.dtype],
+    #             custom_fp32_cells=[nn.GroupNorm] if args.keep_gn_fp32 else [],
+    #         )
+    #         vae = auto_mixed_precision(
+    #             vae,
+    #             amp_level=amp_level,
+    #             dtype=dtype_map[args.dtype],
+    #             custom_fp32_cells=[nn.GroupNorm] if args.keep_gn_fp32 else [],
+    #         )
+    #     logger.info(f"Set mixed precision to O2 with dtype={args.dtype}")
+    # else:
+    #     amp_level = "O0"
 
     # 2.2 pipeline
-    scheduler = T2VTurboScheduler(
-        linear_start=model_config["params"]["linear_start"],
-        linear_end=model_config["params"]["linear_end"],
+    noise_scheduler = T2VTurboScheduler()
+    pipeline = T2VTurboMSPipeline(
+        unet=unet,
+        vae=vae,
+        text_encoder=text_encoder,
+        tokenizer=tokenizer,
+        scheduler=noise_scheduler,
+        dtype=dtype,
     )
-    pipeline = T2VTurboVC2Pipeline(pretrained_t2v, scheduler, model_config)
-    pipeline.to(dtype)
 
     # 3. inference
     generator = np.random.Generator(np.random.PCG64(args.seed))
 
-    # 3.1 tokenize
-    tokens, _ = tokenize(args.prompt)
-    tokens = ms.Tensor(np.array(tokens, dtype=np.int32))
-
     result = pipeline(
-        prompt=tokens,
+        prompt=args.prompt,
         frames=args.num_frames,
-        fps=args.fps,
         guidance_scale=args.guidance_scale,
         num_inference_steps=args.num_inference_steps,
         num_videos_per_prompt=1,
@@ -248,6 +258,12 @@ def parse_args():
         default="configs/inference_t2v_512_v2.0.yaml",
         type=str,
         help="path to load a config yaml file that describes the setting which will override the default arguments",
+    )
+    parser.add_argument(
+        "--unet_dir",
+        default="./checkpoints/unet_lora.pt",
+        type=str,
+        help="path to lora weights",
     )
     parser.add_argument(
         "--dtype",
@@ -330,7 +346,7 @@ def parse_args():
     parser.add_argument(
         "--prompt",
         type=str,
-        default="A dancing cat.",
+        default="With the style of low-poly game art, A majestic, white horse gallops gracefully across a moonlit beach.",
         help="Input prompt for generation.",
     )
 
