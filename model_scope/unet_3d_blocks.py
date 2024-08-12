@@ -19,10 +19,13 @@ from mindspore import nn, ops
 
 from mindone.diffusers.utils import logging
 from mindone.diffusers.models.attention import Attention
-from mindone.diffusers.models.resnet import Downsample2D, ResnetBlock2D, SpatioTemporalResBlock, TemporalConvLayer, Upsample2D
+from mindone.diffusers.models.resnet import Downsample2D, ResnetBlock2D, Upsample2D
 from mindone.diffusers.models.transformers.dual_transformer_2d import DualTransformer2DModel
 from mindone.diffusers.models.transformers.transformer_2d import Transformer2DModel
 from mindone.diffusers.models.transformers.transformer_temporal import TransformerSpatioTemporalModel, TransformerTemporalModel
+
+from .resnet import TemporalConvLayer, SpatioTemporalResBlock
+
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -48,6 +51,7 @@ def get_down_block(
     temporal_num_attention_heads: int = 8,
     temporal_max_seq_length: int = 32,
     transformer_layers_per_block: int = 1,
+    dtype: ms.dtype = ms.float32,
 ) -> Union[
     "DownBlock3D",
     "CrossAttnDownBlock3D",
@@ -68,6 +72,7 @@ def get_down_block(
             resnet_groups=resnet_groups,
             downsample_padding=downsample_padding,
             resnet_time_scale_shift=resnet_time_scale_shift,
+            dtype=dtype,
         )
     elif down_block_type == "CrossAttnDownBlock3D":
         if cross_attention_dim is None:
@@ -89,6 +94,7 @@ def get_down_block(
             only_cross_attention=only_cross_attention,
             upcast_attention=upcast_attention,
             resnet_time_scale_shift=resnet_time_scale_shift,
+            dtype=dtype,
         )
     if down_block_type == "DownBlockMotion":
         return DownBlockMotion(
@@ -104,6 +110,7 @@ def get_down_block(
             resnet_time_scale_shift=resnet_time_scale_shift,
             temporal_num_attention_heads=temporal_num_attention_heads,
             temporal_max_seq_length=temporal_max_seq_length,
+            dtype=dtype,
         )
     elif down_block_type == "CrossAttnDownBlockMotion":
         if cross_attention_dim is None:
@@ -127,6 +134,7 @@ def get_down_block(
             resnet_time_scale_shift=resnet_time_scale_shift,
             temporal_num_attention_heads=temporal_num_attention_heads,
             temporal_max_seq_length=temporal_max_seq_length,
+            dtype=dtype,
         )
     elif down_block_type == "DownBlockSpatioTemporal":
         # added for SDV
@@ -136,6 +144,7 @@ def get_down_block(
             out_channels=out_channels,
             temb_channels=temb_channels,
             add_downsample=add_downsample,
+            dtype=dtype,
         )
     elif down_block_type == "CrossAttnDownBlockSpatioTemporal":
         # added for SDV
@@ -150,6 +159,7 @@ def get_down_block(
             add_downsample=add_downsample,
             cross_attention_dim=cross_attention_dim,
             num_attention_heads=num_attention_heads,
+            dtype=dtype,
         )
 
     raise ValueError(f"{down_block_type} does not exist.")
@@ -179,6 +189,7 @@ def get_up_block(
     temporal_max_seq_length: int = 32,
     transformer_layers_per_block: int = 1,
     dropout: float = 0.0,
+    dtype: ms.dtype = ms.float32,
 ) -> Union[
     "UpBlock3D",
     "CrossAttnUpBlock3D",
@@ -200,6 +211,7 @@ def get_up_block(
             resnet_groups=resnet_groups,
             resnet_time_scale_shift=resnet_time_scale_shift,
             resolution_idx=resolution_idx,
+            dtype=dtype,
         )
     elif up_block_type == "CrossAttnUpBlock3D":
         if cross_attention_dim is None:
@@ -222,6 +234,7 @@ def get_up_block(
             upcast_attention=upcast_attention,
             resnet_time_scale_shift=resnet_time_scale_shift,
             resolution_idx=resolution_idx,
+            dtype=dtype,
         )
     if up_block_type == "UpBlockMotion":
         return UpBlockMotion(
@@ -273,6 +286,7 @@ def get_up_block(
             temb_channels=temb_channels,
             resolution_idx=resolution_idx,
             add_upsample=add_upsample,
+            dtype=dtype,
         )
     elif up_block_type == "CrossAttnUpBlockSpatioTemporal":
         # added for SDV
@@ -289,6 +303,7 @@ def get_up_block(
             cross_attention_dim=cross_attention_dim,
             num_attention_heads=num_attention_heads,
             resolution_idx=resolution_idx,
+            dtype=dtype,
         )
 
     raise ValueError(f"{up_block_type} does not exist.")
@@ -312,6 +327,7 @@ class UNetMidBlock3DCrossAttn(nn.Cell):
         dual_cross_attention: bool = False,
         use_linear_projection: bool = True,
         upcast_attention: bool = False,
+        dtype: ms.dtype = ms.float32,
     ):
         super().__init__()
 
@@ -340,6 +356,7 @@ class UNetMidBlock3DCrossAttn(nn.Cell):
                 in_channels,
                 dropout=0.1,
                 norm_num_groups=resnet_groups,
+                dtype=dtype,
             )
         ]
         attentions = []
@@ -388,6 +405,7 @@ class UNetMidBlock3DCrossAttn(nn.Cell):
                     in_channels,
                     dropout=0.1,
                     norm_num_groups=resnet_groups,
+                    dtype=dtype,
                 )
             )
 
@@ -450,6 +468,7 @@ class CrossAttnDownBlock3D(nn.Cell):
         use_linear_projection: bool = False,
         only_cross_attention: bool = False,
         upcast_attention: bool = False,
+        dtype: ms.dtype = ms.float32,
     ):
         super().__init__()
         resnets = []
@@ -482,6 +501,7 @@ class CrossAttnDownBlock3D(nn.Cell):
                     out_channels,
                     dropout=0.1,
                     norm_num_groups=resnet_groups,
+                    dtype=dtype,
                 )
             )
             attentions.append(
@@ -586,6 +606,7 @@ class DownBlock3D(nn.Cell):
         output_scale_factor: float = 1.0,
         add_downsample: bool = True,
         downsample_padding: int = 1,
+        dtype: ms.dtype = ms.float32,
     ):
         super().__init__()
         resnets = []
@@ -613,6 +634,7 @@ class DownBlock3D(nn.Cell):
                     out_channels,
                     dropout=0.1,
                     norm_num_groups=resnet_groups,
+                    dtype=dtype,
                 )
             )
 
@@ -683,6 +705,7 @@ class CrossAttnUpBlock3D(nn.Cell):
         only_cross_attention: bool = False,
         upcast_attention: bool = False,
         resolution_idx: Optional[int] = None,
+        dtype: ms.dtype = ms.float32,
     ):
         super().__init__()
         resnets = []
@@ -717,6 +740,7 @@ class CrossAttnUpBlock3D(nn.Cell):
                     out_channels,
                     dropout=0.1,
                     norm_num_groups=resnet_groups,
+                    dtype=dtype,
                 )
             )
             attentions.append(
@@ -826,6 +850,7 @@ class UpBlock3D(nn.Cell):
         output_scale_factor: float = 1.0,
         add_upsample: bool = True,
         resolution_idx: Optional[int] = None,
+        dtype: ms.dtype = ms.float32,
     ):
         super().__init__()
         resnets = []
@@ -855,6 +880,7 @@ class UpBlock3D(nn.Cell):
                     out_channels,
                     dropout=0.1,
                     norm_num_groups=resnet_groups,
+                    dtype=dtype,
                 )
             )
 
@@ -1581,6 +1607,7 @@ class MidBlockTemporalDecoder(nn.Cell):
         attention_head_dim: int = 512,
         num_layers: int = 1,
         upcast_attention: bool = False,
+        dtype: ms.dtype = ms.float32,
     ):
         super().__init__()
 
@@ -1598,6 +1625,7 @@ class MidBlockTemporalDecoder(nn.Cell):
                     merge_factor=0.0,
                     merge_strategy="learned",
                     switch_spatial_to_temporal_mix=True,
+                    dtype=dtype,
                 )
             )
 
@@ -1644,6 +1672,7 @@ class UpBlockTemporalDecoder(nn.Cell):
         out_channels: int,
         num_layers: int = 1,
         add_upsample: bool = True,
+        dtype: ms.dtype = ms.float32,
     ):
         super().__init__()
         resnets = []
@@ -1660,6 +1689,7 @@ class UpBlockTemporalDecoder(nn.Cell):
                     merge_factor=0.0,
                     merge_strategy="learned",
                     switch_spatial_to_temporal_mix=True,
+                    dtype=dtype,
                 )
             )
         self.resnets = nn.CellList(resnets)
@@ -1698,6 +1728,7 @@ class UNetMidBlockSpatioTemporal(nn.Cell):
         transformer_layers_per_block: Union[int, Tuple[int]] = 1,
         num_attention_heads: int = 1,
         cross_attention_dim: int = 1280,
+        dtype: ms.dtype = ms.float32,
     ):
         super().__init__()
 
@@ -1715,6 +1746,7 @@ class UNetMidBlockSpatioTemporal(nn.Cell):
                 out_channels=in_channels,
                 temb_channels=temb_channels,
                 eps=1e-5,
+                dtype=dtype,
             )
         ]
         attentions = []
@@ -1736,6 +1768,7 @@ class UNetMidBlockSpatioTemporal(nn.Cell):
                     out_channels=in_channels,
                     temb_channels=temb_channels,
                     eps=1e-5,
+                    dtype=dtype,
                 )
             )
 
@@ -1781,6 +1814,7 @@ class DownBlockSpatioTemporal(nn.Cell):
         temb_channels: int,
         num_layers: int = 1,
         add_downsample: bool = True,
+        dtype: ms.dtype = ms.float32,
     ):
         super().__init__()
         resnets = []
@@ -1793,6 +1827,7 @@ class DownBlockSpatioTemporal(nn.Cell):
                     out_channels=out_channels,
                     temb_channels=temb_channels,
                     eps=1e-5,
+                    dtype=dtype,
                 )
             )
 
@@ -1851,6 +1886,7 @@ class CrossAttnDownBlockSpatioTemporal(nn.Cell):
         num_attention_heads: int = 1,
         cross_attention_dim: int = 1280,
         add_downsample: bool = True,
+        dtype: ms.dtype = ms.float32,
     ):
         super().__init__()
         resnets = []
@@ -1869,6 +1905,7 @@ class CrossAttnDownBlockSpatioTemporal(nn.Cell):
                     out_channels=out_channels,
                     temb_channels=temb_channels,
                     eps=1e-6,
+                    dtype=dtype,
                 )
             )
             attentions.append(
@@ -1946,6 +1983,7 @@ class UpBlockSpatioTemporal(nn.Cell):
         num_layers: int = 1,
         resnet_eps: float = 1e-6,
         add_upsample: bool = True,
+        dtype: ms.dtype = ms.float32,
     ):
         super().__init__()
         resnets = []
@@ -1960,6 +1998,7 @@ class UpBlockSpatioTemporal(nn.Cell):
                     out_channels=out_channels,
                     temb_channels=temb_channels,
                     eps=resnet_eps,
+                    dtype=dtype,
                 )
             )
 
@@ -2015,6 +2054,7 @@ class CrossAttnUpBlockSpatioTemporal(nn.Cell):
         num_attention_heads: int = 1,
         cross_attention_dim: int = 1280,
         add_upsample: bool = True,
+        dtype: ms.dtype = ms.float32,
     ):
         super().__init__()
         resnets = []
@@ -2036,6 +2076,7 @@ class CrossAttnUpBlockSpatioTemporal(nn.Cell):
                     out_channels=out_channels,
                     temb_channels=temb_channels,
                     eps=resnet_eps,
+                    dtype=dtype,
                 )
             )
             attentions.append(

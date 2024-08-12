@@ -53,6 +53,7 @@ def init_env(
     jit_level: str = "O0",
     global_bf16: bool = False,
     debug: bool = False,
+    dtype: ms.dtype = ms.float32,
 ):
     """
     Initialize MindSpore environment.
@@ -112,6 +113,13 @@ def init_env(
 
     if global_bf16:
         ms.set_context(ascend_config={"precision_mode": "allow_mix_precision_bf16"})
+        logger.info("Using precision_mode: allow_mix_precision_bf16")
+    elif dtype == ms.bfloat16:
+        ms.set_context(ascend_config={"precision_mode": "allow_fp32_to_bf16"})
+        logger.info("Using precision_mode: allow_fp32_to_bf16")
+    elif dtype == ms.float16:
+        ms.set_context(ascend_config={"precision_mode": "allow_mix_precision_fp16"})
+        logger.info("Using precision_mode: allow_mix_precision_fp16")
 
     return rank_id, device_num
 
@@ -154,7 +162,7 @@ def main(args):
     )
     vae = AutoencoderKL.from_pretrained(pretrained_model_path, subfolder="vae")
     teacher_unet = UNet3DConditionModel.from_pretrained(
-        pretrained_model_path, subfolder="unet"
+        pretrained_model_path, subfolder="unet", dtype=dtype
     )
 
     time_cond_proj_dim = 256
