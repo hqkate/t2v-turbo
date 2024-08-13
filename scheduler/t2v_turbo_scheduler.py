@@ -21,7 +21,7 @@ from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import mindspore as ms
-from mindspore import nn, ops
+from mindspore import nn, ops, mint
 
 from mindone.diffusers import ConfigMixin, SchedulerMixin
 from mindone.diffusers.configuration_utils import register_to_config
@@ -120,7 +120,7 @@ def rescale_zero_terminal_snr(betas):
     # Convert alphas_bar_sqrt to betas
     alphas_bar = alphas_bar_sqrt**2  # Revert sqrt
     alphas = alphas_bar[1:] / alphas_bar[:-1]  # Revert cumprod
-    alphas = ops.cat([alphas_bar[0:1], alphas])
+    alphas = mint.cat([alphas_bar[0:1], alphas])
     betas = 1 - alphas
 
     return betas
@@ -305,13 +305,13 @@ class T2VTurboScheduler(SchedulerMixin, ConfigMixin):
         abs_sample = sample.abs()  # "a certain percentile absolute pixel value"
 
         s = ops.quantile(abs_sample, self.config.dynamic_thresholding_ratio, dim=1)
-        s = ops.clamp(
+        s = mint.clamp(
             s, min=1, max=self.config.sample_max_value
         )  # When clamped to min=1, equivalent to standard clipping to [-1, 1]
 
         s = s.unsqueeze(1)  # (batch_size, 1) because clamp will broadcast along dim=0
         sample = (
-            ops.clamp(sample, -s, s) / s
+            mint.clamp(sample, -s, s) / s
         )  # "we threshold xt0 to the range [-s, s] and then divide by s"
 
         sample = sample.reshape(batch_size, channels, height, width)

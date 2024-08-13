@@ -4,7 +4,7 @@ from typing import List, Optional, Union, Dict, Any
 
 import numpy as np
 import mindspore as ms
-from mindspore import nn, ops
+from mindspore import ops, mint
 
 from mindone.diffusers import DiffusionPipeline
 from mindone.diffusers.utils.mindspore_utils import randn_tensor
@@ -109,12 +109,12 @@ class T2VTurboVC2Pipeline(DiffusionPipeline):
         w = w * 1000.0
 
         half_dim = embedding_dim // 2
-        emb = ops.log(ms.Tensor(10000.0)) / (half_dim - 1)
-        emb = ops.exp(ops.arange(half_dim, dtype=dtype) * -emb)
+        emb = mint.log(ms.Tensor(10000.0)) / (half_dim - 1)
+        emb = mint.exp(mint.arange(half_dim, dtype=dtype) * -emb)
         emb = w.to(dtype)[:, None] * emb[None, :]
-        emb = ops.cat([ops.sin(emb), ops.cos(emb)], axis=1)
+        emb = mint.cat([mint.sin(emb), mint.cos(emb)], dim=1)
         if embedding_dim % 2 == 1:  # zero pad
-            emb = ops.pad(emb, (0, 1))
+            emb = mint.pad(emb, (0, 1))
         assert emb.shape == (w.shape[0], embedding_dim)
         return emb
 
@@ -187,7 +187,7 @@ class T2VTurboVC2Pipeline(DiffusionPipeline):
                 ts = ops.full((bs,), t, dtype=ms.int32)
 
                 # model prediction (v-prediction, eps, x)
-                context = {"context": ops.cat([prompt_embeds.float()], 1), "fps": fps}
+                context = {"context": mint.cat([prompt_embeds.float()], 1), "fps": fps}
                 model_pred = self.unet(
                     latents,
                     ts,

@@ -2,7 +2,7 @@ from functools import partial
 # from einops import rearrange, repeat
 import numpy as np
 import mindspore as ms
-from mindspore import nn, ops
+from mindspore import nn, ops, mint
 
 try:
     import xformers
@@ -36,10 +36,10 @@ class RelativePosition(nn.Cell):
 
     def construct(self, length_q, length_k):
         device = self.embeddings_table.device
-        range_vec_q = ops.arange(length_q, device=device)
-        range_vec_k = ops.arange(length_k, device=device)
+        range_vec_q = mint.arange(length_q, device=device)
+        range_vec_k = mint.arange(length_k, device=device)
         distance_mat = range_vec_k[None, :] - range_vec_q[:, None]
-        distance_mat_clipped = ops.clamp(
+        distance_mat_clipped = mint.clamp(
             distance_mat, -self.max_relative_position, self.max_relative_position
         )
         final_mat = distance_mat_clipped + self.max_relative_position
@@ -147,14 +147,14 @@ class CrossAttention(nn.Cell):
         k = self._rearrange_in(k, h)
         v = self._rearrange_in(v, h)
 
-        sim = ops.matmul(q, ops.transpose(k, (0, 2, 1))) * self.scale
+        sim = mint.matmul(q, ops.transpose(k, (0, 2, 1))) * self.scale
         # sim = ops.einsum("b i d, b j d -> b i j", q, k) * self.scale
 
         if self.relative_position:
             len_q, len_k, len_v = q.shape[1], k.shape[1], v.shape[1]
             k2 = self.relative_position_k(len_q, len_k)
             # sim2 = einsum("b t d, t s d -> b t s", q, k2) * self.scale  # TODO check
-            sim2 = ops.matmul(q, ops.transpose(k2, (0, 2, 1))) * self.scale
+            sim2 = mint.matmul(q, ops.transpose(k2, (0, 2, 1))) * self.scale
             sim += sim2
 
         if exists(mask):
@@ -165,14 +165,14 @@ class CrossAttention(nn.Cell):
             sim = sim.masked_fill(~(mask > 0.5), max_neg_value)
 
         # attention, what we cannot get enough of
-        sim = ops.softmax(sim, axis=-1)
+        sim = mint.nn.functional.softmax(sim, axis=-1)
         # out = einsum("b i j, b j d -> b i d", sim, v)
-        out = ops.matmul(sim, v)
+        out = mint.matmul(sim, v)
 
         if self.relative_position:
             v2 = self.relative_position_v(len_q, len_v)
             # out2 = einsum("b t s, t s d -> b t d", sim, v2)  # TODO check
-            out2 = ops.matmul(sim, v2) # TODO check
+            out2 = mint.matmul(sim, v2) # TODO check
             out += out2
 
         # out = rearrange(out, "(b h) n d -> b n (h d)", h=h)
@@ -186,10 +186,10 @@ class CrossAttention(nn.Cell):
             k_ip = self._rearrange_in(k_ip, h)
             v_ip = self._rearrange_in(v_ip, h)
             # sim_ip = einsum("b i d, b j d -> b i j", q, k_ip) * self.scale
-            sim_ip = ops.matmul(q, ops.transpose(k_ip, (0, 2, 1))) * self.scale
+            sim_ip = mint.matmul(q, ops.transpose(k_ip, (0, 2, 1))) * self.scale
             sim_ip = sim_ip.softmax(axis=-1)
             # out_ip = einsum("b i j, b j d -> b i d", sim_ip, v_ip)
-            out_ip = ops.matmul(sim_ip, v_ip)
+            out_ip = mint.matmul(sim_ip, v_ip)
             # out_ip = rearrange(out_ip, "(b h) n d -> b n (h d)", h=h)
             out_ip = self._rearrange_out(out_ip, h)
             out = out + self.image_cross_attention_scale * out_ip
@@ -449,7 +449,7 @@ class TemporalTransformer(nn.Cell):
             attention_cls = None
         if self.causal_attention:
             assert temporal_length is not None
-            self.mask = ops.tril(ops.ones([1, temporal_length, temporal_length]))
+            self.mask = ops.tril(mint.ones([1, temporal_length, temporal_length]))
 
         if self.only_self_att:
             context_dim = None
@@ -550,7 +550,7 @@ class GEGLU(nn.Cell):
 
     def construct(self, x):
         x, gate = self.proj(x).chunk(2, axis=-1)
-        return x * ops.gelu(gate)
+        return x * mint.nn.functional.gelu(gate)
 
 
 class FeedForward(nn.Cell):
@@ -640,10 +640,10 @@ class SpatialSelfAttention(nn.Cell):
         # k = rearrange(k, "b c h w -> b c (h w)")
         k = k.reshape(b, c, -1)
         # w_ = ops.einsum("bij,bjk->bik", q, k)
-        w_ = ops.matmul(q, k) # TODO: check!
+        w_ = mint.matmul(q, k) # TODO: check!
 
         w_ = w_ * (int(c) ** (-0.5))
-        w_ = ops.softmax(w_, axis=2)
+        w_ = mint.nn.functional.softmax(w_, axis=2)
 
         # attend to values
         # v = rearrange(v, "b c h w -> b c (h w)")
@@ -652,7 +652,7 @@ class SpatialSelfAttention(nn.Cell):
         # w_ = rearrange(w_, "b i j -> b j i")
         w_ = w_.permute(0, 2, 1)
         # h_ = ops.einsum("bij,bjk->bik", v, w_)
-        h_ = ops.matmul(v, w_) # TODO: check!!
+        h_ = mint.matmul(v, w_) # TODO: check!!
         # h_ = rearrange(h_, "b c (h w) -> b c h w", h=h)
         h_ = h_.reshape(h_.shape[0], h_.shape[1], -1)
         h_ = self.proj_out(h_)

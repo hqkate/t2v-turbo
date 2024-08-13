@@ -10,7 +10,7 @@ from packaging import version
 
 import mindspore as ms
 import mindspore.ops as ops
-from mindspore import Parameter, Tensor, nn
+from mindspore import Parameter, Tensor, nn, mint
 from mindspore.common.initializer import Normal, initializer
 from mindspore.train.serialization import load_checkpoint, load_param_into_net
 
@@ -77,7 +77,7 @@ class CLIPModel(nn.Cell):
             )
         )
         self.logit_scale = Parameter(Tensor(np.log(1 / 0.07), self.dtype))
-        self.exp = ops.Exp()
+        self.exp = mint.exp()
 
         self.load_checkpoint(config)
 
@@ -140,11 +140,11 @@ class CLIPModel(nn.Cell):
         logit_scale = self.exp(self.logit_scale)
 
         if label is None:
-            logits_per_image = ops.matmul(logit_scale * image_features, text_features.T)
+            logits_per_image = mint.matmul(logit_scale * image_features, text_features.T)
             logits_per_text = logits_per_image.T
             return logits_per_image, logits_per_text
 
-        logits_per_image = ops.matmul(logit_scale * image_features, text_features.T)
+        logits_per_image = mint.matmul(logit_scale * image_features, text_features.T)
         return logits_per_image, label
 
     def build_attention_mask(self):
@@ -191,7 +191,7 @@ class CLIPModel(nn.Cell):
         text_ = text_.transpose(1, 0, 2)
         text_ = self.ln_final(text_)
 
-        text_ = ops.matmul(text_[ms.numpy.arange(text_.shape[0]), text.argmax(-1)], self.text_projection)
+        text_ = mint.matmul(text_[ms.numpy.arange(text_.shape[0]), text.argmax(-1)], self.text_projection)
         return text_
 
     def load_checkpoint(self, config):

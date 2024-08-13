@@ -8,7 +8,7 @@ from mindone.transformers import CLIPModel
 from utils.download import download_checkpoint
 
 import mindspore as ms
-from mindspore import nn, ops
+from mindspore import nn, mint
 
 __all__ = [
     "FrozenOpenCLIPEmbedder",
@@ -121,7 +121,7 @@ class FrozenOpenCLIPEmbedder(nn.Cell):
             text = input_ids
         text_ = self.model.token_embedding(text)
         text_ = text_.astype(self.model.dtype)
-        text_ = ops.Add()(text_, self.model.positional_embedding)
+        text_ = mint.add(text_, self.model.positional_embedding)
         text_ = text_.transpose(1, 0, 2)
         text_ = self.model.transformer(text_)
         text_ = text_.transpose(1, 0, 2)

@@ -3,7 +3,7 @@ import yaml
 
 
 import mindspore as ms
-from mindspore import nn, ops
+from mindspore import nn, ops, mint
 
 # from torch.utils.checkpoint import checkpoint
 # import kornia
@@ -83,8 +83,8 @@ class ClassEmbedder(nn.Cell):
         # this is for use in crossattn
         c = batch[key][:, None]
         if self.ucg_rate > 0.0 and not disable_dropout:
-            mask = 1.0 - ops.bernoulli(ops.ones_like(c) * self.ucg_rate)
-            c = mask * c + (1 - mask) * ops.ones_like(c) * (self.n_classes - 1)
+            mask = 1.0 - ops.bernoulli(mint.ones_like(c) * self.ucg_rate)
+            c = mask * c + (1 - mask) * mint.ones_like(c) * (self.n_classes - 1)
             c = c.long()
         c = self.embedding(c)
         return c
@@ -93,7 +93,7 @@ class ClassEmbedder(nn.Cell):
         uc_class = (
             self.n_classes - 1
         )  # 1000 classes --> 0 ... 999, one extra class for ucg (class 1000)
-        uc = ops.ones((bs,)) * uc_class
+        uc = mint.ones((bs,)) * uc_class
         uc = {self.key: uc}
         return uc
 
@@ -243,7 +243,7 @@ class ClipImageEmbedder(nn.Cell):
         if self.ucg_rate > 0.0 and not no_dropout:
             out = (
                 ops.bernoulli(
-                    (1.0 - self.ucg_rate) * ops.ones(out.shape[0])
+                    (1.0 - self.ucg_rate) * mint.ones(out.shape[0])
                 )[:, None]
                 * out
             )
@@ -393,7 +393,7 @@ class FrozenOpenCLIPImageEmbedder(AbstractEncoder):
         if self.ucg_rate > 0.0 and not no_dropout:
             z = (
                 ops.bernoulli(
-                    (1.0 - self.ucg_rate) * ops.ones(z.shape[0])
+                    (1.0 - self.ucg_rate) * mint.ones(z.shape[0])
                 )[:, None]
                 * z
             )
@@ -490,10 +490,10 @@ class FrozenOpenCLIPImageEmbedderV2(AbstractEncoder):
             x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
 
         # class embeddings and positional embeddings
-        x = ops.cat(
+        x = mint.cat(
             [
                 self.model.visual.class_embedding.to(x.dtype)
-                + ops.zeros(
+                + mint.zeros(
                     x.shape[0], 1, x.shape[-1], dtype=x.dtype
                 ),
                 x,
