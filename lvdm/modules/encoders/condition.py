@@ -309,22 +309,16 @@ class FrozenOpenCLIPEmbedder(AbstractEncoder):
         x = self.model.token_embedding(tokens)  # [batch_size, n_ctx, d_model]
         x = x + self.model.positional_embedding
         x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.model.transformer(x) # TODO!!: self.text_transformer_forward(x, attn_mask=self.model.attn_mask)
+        x = self.text_transformer_forward(x)
         x = x.permute(1, 0, 2)  # LND -> NLD
         x = self.model.ln_final(x)
         return x
 
-    def text_transformer_forward(self, x: ms.Tensor, attn_mask=None):
+    def text_transformer_forward(self, x: ms.Tensor):
         for i, r in enumerate(self.model.transformer.resblocks):
             if i == len(self.model.transformer.resblocks) - self.layer_idx:
                 break
-            if (
-                self.model.transformer.grad_checkpointing
-                and not torch.jit.is_scripting()
-            ):
-                x = checkpoint(r, x, attn_mask)
-            else:
-                x = r(x, attn_mask=attn_mask)
+            x = r(x)
         return x
 
     def encode(self, text):
