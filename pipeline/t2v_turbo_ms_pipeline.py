@@ -59,15 +59,15 @@ class T2VTurboMSPipeline(DiffusionPipeline):
                 provided, text embeddings will be generated from `prompt` input argument.
         """
         if prompt_embeds is None:
-            with ms._no_grad():
-                text_inputs = self.tokenizer(
-                    prompt,
-                    padding="max_length",
-                    max_length=self.tokenizer.model_max_length,
-                    truncation=True,
-                )
-                text_input_ids = ms.Tensor(text_inputs["input_ids"])
-                prompt_embeds = self.text_encoder(text_input_ids)[0]
+            # with ms._no_grad():
+            text_inputs = self.tokenizer(
+                prompt,
+                padding="max_length",
+                max_length=self.tokenizer.model_max_length,
+                truncation=True,
+            )
+            text_input_ids = ms.Tensor(text_inputs["input_ids"])
+            prompt_embeds = self.text_encoder(text_input_ids)[0]
 
         bs_embed, seq_len, _ = prompt_embeds.shape
         # duplicate text embeddings for each generation per prompt, using mps friendly method
