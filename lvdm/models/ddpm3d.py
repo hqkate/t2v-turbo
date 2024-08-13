@@ -662,7 +662,7 @@ class LatentDiffusion(DDPM):
                 self.first_stage_model.decode(z[:, :, i], **kwargs).unsqueeze(2)
                 for i in range(t)
             ],
-            axis=2,
+            dim=2,
         )
 
         return results

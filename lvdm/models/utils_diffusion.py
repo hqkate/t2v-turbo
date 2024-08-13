@@ -21,10 +21,10 @@ def timestep_embedding(timesteps, dim, max_period=10000, repeat_only=False, dtyp
             / half
         )
         args = timesteps[:, None].float() * freqs[None]
-        embedding = mint.cat([mint.cos(args), mint.sin(args)], axis=-1)
+        embedding = mint.cat([mint.cos(args), mint.sin(args)], dim=-1)
         if dim % 2:
             embedding = mint.cat(
-                [embedding, mint.zeros_like(embedding[:, :1])], axis=-1
+                [embedding, mint.zeros_like(embedding[:, :1])], dim=-1
             )
     else:
         timesteps = timesteps.unsqueeze(1)

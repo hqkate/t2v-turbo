@@ -82,7 +82,7 @@ class PerceiverAttention(nn.Cell):
         b, l, _ = latents.shape
 
         q = self.to_q(latents)
-        kv_input = mint.cat((x, latents), axis=-2)
+        kv_input = mint.cat((x, latents), dim=-2)
         k, v = self.to_kv(kv_input).chunk(2, axis=-1)
 
         q = reshape_tensor(q, self.heads)

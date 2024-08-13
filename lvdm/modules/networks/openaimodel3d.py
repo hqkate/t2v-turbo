@@ -716,7 +716,7 @@ class UNetModel(nn.Cell):
 
         for i, module in enumerate(self.output_blocks):
             hs_pop = hs[-(i + 1)]
-            h = mint.cat([h, hs_pop], axis=1)
+            h = mint.cat([h, hs_pop], dim=1)
             h = module(h, emb, context=context, batch_size=b)
 
         h = h.astype(x.dtype)

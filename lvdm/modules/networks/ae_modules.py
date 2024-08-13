@@ -140,7 +140,7 @@ def get_timestep_embedding(timesteps, embedding_dim):
     emb = mint.exp(mint.arange(half_dim, dtype=ms.float32) * -emb)
     emb = emb.to(device=timesteps.device)
     emb = timesteps.float()[:, None] * emb[None, :]
-    emb = mint.cat([mint.sin(emb), mint.cos(emb)], axis=1)
+    emb = mint.cat([mint.sin(emb), mint.cos(emb)], dim=1)
     if embedding_dim % 2 == 1:  # zero pad
         emb = mint.pad(emb, (0, 1, 0, 0))
     return emb
@@ -331,7 +331,7 @@ class Model(nn.Cell):
         # assert x.shape[2] == x.shape[3] == self.resolution
         if context is not None:
             # assume aligned context, cat along channel axis
-            x = mint.cat((x, context), axis=1)
+            x = mint.cat((x, context), dim=1)
         if self.use_timestep:
             # timestep embedding
             assert t is not None

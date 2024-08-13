@@ -123,7 +123,7 @@ class T2VTurboMSPipeline(DiffusionPipeline):
         emb = mint.log(ms.Tensor(10000.0)) / (half_dim - 1)
         emb = mint.exp(mint.arange(half_dim, dtype=dtype) * -emb)
         emb = w.to(dtype)[:, None] * emb[None, :]
-        emb = mint.cat([mint.sin(emb), mint.cos(emb)], axis=1)
+        emb = mint.cat([mint.sin(emb), mint.cos(emb)], dim=1)
         if embedding_dim % 2 == 1:  # zero pad
             emb = mint.pad(emb, (0, 1))
         assert emb.shape == (w.shape[0], embedding_dim)
@@ -211,7 +211,7 @@ class T2VTurboMSPipeline(DiffusionPipeline):
             z = denoised.to(self.vae.dtype) / self.vae.config.scaling_factor
             videos = mint.cat(
                 [self.vae.decode(z[:, :, i])[0].unsqueeze(2) for i in range(t)],
-                axis=2,
+                dim=2,
             )
         else:
             videos = denoised
