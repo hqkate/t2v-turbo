@@ -1,7 +1,7 @@
 # modified from https://github.com/mlfoundations/open_flamingo/blob/main/open_flamingo/src/helpers.py
 import math
 import mindspore as ms
-from mindspore import nn, ops
+from mindspore import nn, ops, mint
 
 
 class ImageProjModel(nn.Cell):
@@ -82,7 +82,7 @@ class PerceiverAttention(nn.Cell):
         b, l, _ = latents.shape
 
         q = self.to_q(latents)
-        kv_input = ops.cat((x, latents), axis=-2)
+        kv_input = mint.cat((x, latents), axis=-2)
         k, v = self.to_kv(kv_input).chunk(2, axis=-1)
 
         q = reshape_tensor(q, self.heads)
@@ -94,7 +94,7 @@ class PerceiverAttention(nn.Cell):
         weight = (q * scale) @ (k * scale).transpose(
             -2, -1
         )  # More stable with f16 than dividing afterwards
-        weight = ops.softmax(weight.float(), axis=-1).to(weight.dtype)
+        weight = mint.nn.functional.softmax(weight.float(), axis=-1).to(weight.dtype)
         out = weight @ v
 
         out = out.permute(0, 2, 1, 3).reshape(b, l, -1)

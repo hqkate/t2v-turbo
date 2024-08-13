@@ -12,7 +12,7 @@ import numpy as np
 from omegaconf import OmegaConf
 
 import mindspore as ms
-from mindspore import nn, ops
+from mindspore import nn, mint
 from mindspore.communication.management import get_group_size, get_rank, init
 
 from mindone.utils.seed import set_random_seed
@@ -228,7 +228,7 @@ def main(args):
     # 4. post-processing
 
     video = result[0]  # result -> (1, 3, 16, 320, 512)
-    video = ops.clamp(video.float(), -1.0, 1.0)
+    video = mint.clamp(video.float(), -1.0, 1.0)
     video = video.permute(1, 0, 2, 3)
     video = (video + 1.0) / 2.0
     video = video.permute(0, 2, 3, 1).asnumpy()

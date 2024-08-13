@@ -1,7 +1,7 @@
 import os
 from contextlib import contextmanager
 import mindspore as ms
-from mindspore import nn, ops
+from mindspore import nn, ops, mint
 import numpy as np
 
 from lvdm.modules.networks.ae_modules import Encoder, Decoder
@@ -240,7 +240,7 @@ class AutoencoderKL(nn.Cell):
                 assert xrec.shape[1] > 3
                 x = self.to_rgb(x)
                 xrec = self.to_rgb(xrec)
-            log["samples"] = self.decode(ops.randn_like(posterior.sample()))
+            log["samples"] = self.decode(mint.randn_like(posterior.sample()))
             log["reconstructions"] = xrec
         log["inputs"] = x
         return log
@@ -249,7 +249,7 @@ class AutoencoderKL(nn.Cell):
         assert self.image_key == "segmentation"
         if not hasattr(self, "colorize"):
             self.colorize = ops.randn(3, x.shape[1], 1, 1).to(x.dtype)
-        x = ops.conv2d(x, weight=self.colorize)
+        x = mint.conv2d(x, weight=self.colorize)
         x = 2.0 * (x - x.min()) / (x.max() - x.min()) - 1.0
         return x
 

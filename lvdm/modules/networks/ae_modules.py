@@ -2,7 +2,7 @@
 import math
 import numpy as np
 import mindspore as ms
-from mindspore import nn, ops
+from mindspore import nn, ops, mint
 
 from utils.utils import instantiate_from_config
 from lvdm.common import GroupNormExtend
@@ -12,7 +12,7 @@ from lvdm.modules.attention import LinearAttention
 
 def nonlinearity(x):
     # swish
-    return x * ops.sigmoid(x)
+    return x * mint.sigmoid(x)
 
 
 def Normalize(in_channels, num_groups=32):
@@ -60,14 +60,14 @@ class AttnBlock(nn.Cell):
         q = q.permute(0, 2, 1)  # bcl -> blc l=hw
         k = k.reshape(b, c, h * w)  # bcl
 
-        w_ = ops.bmm(q, k)  # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
+        w_ = mint.bmm(q, k)  # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
         w_ = w_ * (int(c) ** (-0.5))
-        w_ = ops.softmax(w_, axis=2)
+        w_ = mint.nn.functional.softmax(w_, axis=2)
 
         # attend to values
         v = v.reshape(b, c, h * w)
         w_ = w_.permute(0, 2, 1)  # b,hw,hw (first hw of k, second of q)
-        h_ = ops.bmm(v, w_)  # b, c,hw (hw of q) h_[b,c,j] = sum_i v[b,c,i] w_[b,i,j]
+        h_ = mint.bmm(v, w_)  # b, c,hw (hw of q) h_[b,c,j] = sum_i v[b,c,i] w_[b,i,j]
         h_ = h_.reshape(b, c, h, w)
 
         h_ = self.proj_out(h_)
@@ -100,7 +100,7 @@ class Downsample(nn.Cell):
     def construct(self, x):
         if self.with_conv:
             pad = (0, 1, 0, 1)
-            x = ops.pad(x, pad, mode="constant", value=0)
+            x = mint.pad(x, pad, mode="constant", value=0)
             x = self.conv(x)
         else:
             x = ops.avg_pool2d(x, kernel_size=2, stride=2)
@@ -137,12 +137,12 @@ def get_timestep_embedding(timesteps, embedding_dim):
 
     half_dim = embedding_dim // 2
     emb = math.log(10000) / (half_dim - 1)
-    emb = ops.exp(ops.arange(half_dim, dtype=ms.float32) * -emb)
+    emb = mint.exp(mint.arange(half_dim, dtype=ms.float32) * -emb)
     emb = emb.to(device=timesteps.device)
     emb = timesteps.float()[:, None] * emb[None, :]
-    emb = ops.cat([ops.sin(emb), ops.cos(emb)], axis=1)
+    emb = mint.cat([mint.sin(emb), mint.cos(emb)], axis=1)
     if embedding_dim % 2 == 1:  # zero pad
-        emb = ops.pad(emb, (0, 1, 0, 0))
+        emb = mint.pad(emb, (0, 1, 0, 0))
     return emb
 
 
@@ -331,7 +331,7 @@ class Model(nn.Cell):
         # assert x.shape[2] == x.shape[3] == self.resolution
         if context is not None:
             # assume aligned context, cat along channel axis
-            x = ops.cat((x, context), axis=1)
+            x = mint.cat((x, context), axis=1)
         if self.use_timestep:
             # timestep embedding
             assert t is not None
@@ -363,7 +363,7 @@ class Model(nn.Cell):
         for i_level in reversed(range(self.num_resolutions)):
             for i_block in range(self.num_res_blocks + 1):
                 h = self.up[i_level].block[i_block](
-                    ops.cat([h, hs.pop()], dim=1), temb
+                    mint.cat([h, hs.pop()], dim=1), temb
                 )
                 if len(self.up[i_level].attn) > 0:
                     h = self.up[i_level].attn[i_block](h)
@@ -641,7 +641,7 @@ class Decoder(nn.Cell):
         h = self.conv_out(h)
         # print(f'decoder-conv_out feat={h.shape}')
         if self.tanh_out:
-            h = ops.tanh(h)
+            h = mint.tanh(h)
         return h
 
 

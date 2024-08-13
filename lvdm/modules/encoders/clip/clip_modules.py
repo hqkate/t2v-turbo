@@ -8,8 +8,7 @@ from typing import Optional
 import numpy as np
 
 import mindspore as ms
-import mindspore.nn as nn
-import mindspore.ops as ops
+from mindspore import nn, ops, mint
 from mindspore import Parameter, Tensor
 from mindspore import dtype as mstype
 from mindspore.common.initializer import Normal
@@ -40,7 +39,7 @@ class QuickGELU(nn.Cell):
     """
 
     def construct(self, x: Tensor) -> Tensor:
-        return x * ops.sigmoid(1.702 * x)
+        return x * mint.sigmoid(1.702 * x)
 
 
 class MultiheadAttention(nn.Cell):
@@ -95,11 +94,11 @@ class MultiheadAttention(nn.Cell):
         att_v = att_v.view(-1, batch_size * self.num_heads, self.head_dim).transpose((1, 0, 2))
 
         if attn_mask is not None:
-            attn_output_weights = attn_mask + ops.matmul(att_q, att_k.transpose((0, 2, 1)))
+            attn_output_weights = attn_mask + mint.matmul(att_q, att_k.transpose((0, 2, 1)))
         else:
-            attn_output_weights = ops.matmul(att_q, att_k.transpose((0, 2, 1)))
+            attn_output_weights = mint.matmul(att_q, att_k.transpose((0, 2, 1)))
         attn_output_weights = self.softmax(attn_output_weights)
-        attn_output = ops.matmul(attn_output_weights, att_v)
+        attn_output = mint.matmul(attn_output_weights, att_v)
         attn_output = self.transpose(attn_output, (1, 0, 2))
         attn_output = attn_output.view(len_tgt, batch_size, width)
         attn_output = self.out_proj(attn_output)
@@ -176,7 +175,7 @@ class VisionTransformer(nn.Cell):
         input_x = self.transformer(input_x)
         input_x = input_x.transpose(1, 0, 2)
         input_x = self.ln_post(input_x[:, 0, :])
-        input_x = ops.matmul(input_x, self.proj)
+        input_x = mint.matmul(input_x, self.proj)
         return input_x
 
 

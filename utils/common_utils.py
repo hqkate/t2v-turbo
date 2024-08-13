@@ -3,7 +3,7 @@ import gc
 
 import numpy as np
 import mindspore as ms
-from mindspore import nn, ops
+from mindspore import nn, mint
 
 
 from collections import OrderedDict
@@ -62,10 +62,10 @@ def guidance_scale_embedding(w, embedding_dim=512, dtype=ms.float32):
     w = w * 1000.0
 
     half_dim = embedding_dim // 2
-    emb = ops.log(ms.Tensor(10000.0)) / (half_dim - 1)
-    emb = ops.exp(ops.arange(half_dim, dtype=dtype) * -emb)
+    emb = mint.log(ms.Tensor(10000.0)) / (half_dim - 1)
+    emb = mint.exp(mint.arange(half_dim, dtype=dtype) * -emb)
     emb = w.to(dtype)[:, None] * emb[None, :]
-    emb = ops.cat([ops.sin(emb), ops.cos(emb)], dim=1)
+    emb = mint.cat([mint.sin(emb), mint.cos(emb)], dim=1)
     if embedding_dim % 2 == 1:  # zero pad
         emb = nn.functional.pad(emb, (0, 1))
     assert emb.shape == (w.shape[0], embedding_dim)
@@ -152,10 +152,10 @@ def guidance_scale_embedding(w, embedding_dim=512, dtype=ms.float32):
     w = w * 1000.0
 
     half_dim = embedding_dim // 2
-    emb = ops.log(ms.Tensor(10000.0)) / (half_dim - 1)
-    emb = ops.exp(ops.arange(half_dim, dtype=dtype) * -emb)
+    emb = mint.log(ms.Tensor(10000.0)) / (half_dim - 1)
+    emb = mint.exp(mint.arange(half_dim, dtype=dtype) * -emb)
     emb = w.to(dtype)[:, None] * emb[None, :]
-    emb = ops.cat([ops.sin(emb), ops.cos(emb)], dim=1)
+    emb = mint.cat([mint.sin(emb), mint.cos(emb)], dim=1)
     if embedding_dim % 2 == 1:  # zero pad
         emb = nn.functional.pad(emb, (0, 1))
     assert emb.shape == (w.shape[0], embedding_dim)
@@ -299,7 +299,7 @@ def handle_trainable_modules(
 
 
 def huber_loss(pred, target, huber_c=0.001):
-    loss = ops.sqrt((pred.float() - target.float()) ** 2 + huber_c**2) - huber_c
+    loss = mint.sqrt((pred.float() - target.float()) ** 2 + huber_c**2) - huber_c
     return loss.mean()
 
 

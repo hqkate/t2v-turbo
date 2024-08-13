@@ -4,7 +4,7 @@ import numpy as np
 import cv2
 from typing import List
 import mindspore as ms
-from mindspore import nn, ops
+from mindspore import nn, mint
 
 
 def _get_subcell(mod: nn.Cell, target: str) -> "nn.Cell":
@@ -106,13 +106,13 @@ def save_videos(batch_tensors, savedir, filenames, fps=16):
     n_samples = batch_tensors.shape[1]
     for idx, vid_tensor in enumerate(batch_tensors):
         video = vid_tensor.detach().cpu()
-        video = ops.clamp(video.float(), -1.0, 1.0)
+        video = mint.clamp(video.float(), -1.0, 1.0)
         video = video.permute(2, 0, 1, 3, 4)  # t,n,c,h,w
         frame_grids = [
             torchvision.utils.make_grid(framesheet, nrow=int(n_samples))
             for framesheet in video
         ]  # [3, 1*h, n*w]
-        grid = ops.stack(frame_grids, dim=0)  # stack in temporal dim [t, 3, n*h, w]
+        grid = mint.stack(frame_grids, dim=0)  # stack in temporal dim [t, 3, n*h, w]
         grid = (grid + 1.0) / 2.0
         grid = (grid * 255).to(ms.uint8).permute(0, 2, 3, 1)
         savepath = os.path.join(savedir, f"{filenames[idx]}.mp4")

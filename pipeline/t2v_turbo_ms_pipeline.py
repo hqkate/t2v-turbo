@@ -3,7 +3,7 @@ from typing import List, Optional, Tuple, Union, Dict, Any
 
 import numpy as np
 import mindspore as ms
-from mindspore import ops
+from mindspore import ops, mint
 
 from transformers import CLIPTokenizer
 
@@ -120,12 +120,12 @@ class T2VTurboMSPipeline(DiffusionPipeline):
         w = w * 1000.0
 
         half_dim = embedding_dim // 2
-        emb = ops.log(ms.Tensor(10000.0)) / (half_dim - 1)
-        emb = ops.exp(ops.arange(half_dim, dtype=dtype) * -emb)
+        emb = mint.log(ms.Tensor(10000.0)) / (half_dim - 1)
+        emb = mint.exp(mint.arange(half_dim, dtype=dtype) * -emb)
         emb = w.to(dtype)[:, None] * emb[None, :]
-        emb = ops.cat([ops.sin(emb), ops.cos(emb)], axis=1)
+        emb = mint.cat([mint.sin(emb), mint.cos(emb)], axis=1)
         if embedding_dim % 2 == 1:  # zero pad
-            emb = ops.pad(emb, (0, 1))
+            emb = mint.pad(emb, (0, 1))
         assert emb.shape == (w.shape[0], embedding_dim)
         return emb
 
@@ -209,7 +209,7 @@ class T2VTurboMSPipeline(DiffusionPipeline):
         if not output_type == "latent":
             t = denoised.shape[2]
             z = denoised.to(self.vae.dtype) / self.vae.config.scaling_factor
-            videos = ops.cat(
+            videos = mint.cat(
                 [self.vae.decode(z[:, :, i])[0].unsqueeze(2) for i in range(t)],
                 axis=2,
             )

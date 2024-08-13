@@ -7,7 +7,7 @@
 #
 # thanks!
 
-from mindspore import nn, ops
+from mindspore import nn, ops, mint
 from utils.utils import instantiate_from_config
 
 
@@ -22,7 +22,7 @@ def zero_module(module):
     Zero out the parameters of a module and return it.
     """
     for p in module.get_parameters():
-        p = ops.zeros_like(p)
+        p = mint.zeros_like(p)
     return module
 
 

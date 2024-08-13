@@ -2,7 +2,7 @@ import math
 import numpy as np
 from inspect import isfunction
 import mindspore as ms
-from mindspore import nn, ops
+from mindspore import nn, ops, mint
 
 
 class GroupNormExtend(nn.GroupNorm):
@@ -17,7 +17,7 @@ class GroupNormExtend(nn.GroupNorm):
 
 def gather_data(data, return_np=True):
     """gather data from multiple processes to one list"""
-    data_list = [ops.zeros_like(data) for _ in range(dist.get_world_size())]
+    data_list = [mint.zeros_like(data) for _ in range(dist.get_world_size())]
     dist.all_gather(data_list, data)  # gather not supported with NCCL
     if return_np:
         data_list = [data.cpu().numpy() for data in data_list]

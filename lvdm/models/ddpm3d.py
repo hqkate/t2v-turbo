@@ -15,7 +15,7 @@ import logging
 mainlogger = logging.getLogger("mainlogger")
 
 import mindspore as ms
-from mindspore import nn, ops
+from mindspore import nn, ops, mint
 
 # from torchvision.utils import make_grid
 from utils.utils import instantiate_from_config
@@ -324,7 +324,7 @@ class DDPM(nn.Cell):
         )
 
     def q_sample(self, x_start, t, noise=None):
-        noise = default(noise, lambda: ops.randn_like(x_start))
+        noise = default(noise, lambda: mint.randn_like(x_start))
         return (
             extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape)
             * x_start
@@ -342,7 +342,7 @@ class DDPM(nn.Cell):
         n_imgs_per_row = len(samples)
         # denoise_grid = rearrange(samples, "n b c h w -> b n c h w")
         # denoise_grid = rearrange(denoise_grid, "b n c h w -> (b n) c h w")
-        denoise_grid = ops.permute(samples, (1, 0, 2, 3, 4))
+        denoise_grid = mint.permute(samples, (1, 0, 2, 3, 4))
         b, n, c, h, w = denoise_grid.shape
         denoise_grid = denoise_grid.reshape(-1, c, h, w)
         denoise_grid = make_grid(denoise_grid, nrow=n_imgs_per_row)
@@ -364,7 +364,7 @@ class DDPM(nn.Cell):
             if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
                 t = ms.Tensor([t] * n_row)
                 t = t.long()
-                noise = ops.randn_like(x_start)
+                noise = mint.randn_like(x_start)
                 x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
                 diffusion_row.append(x_noisy)
 
@@ -477,12 +477,12 @@ class LatentDiffusion(DDPM):
             dtype=ms.int32,
         )
         ids = ops.round(
-            ops.linspace(0, self.num_timesteps - 1, self.num_timesteps_cond)
+            mint.linspace(0, self.num_timesteps - 1, self.num_timesteps_cond)
         ).long()
         self.cond_ids[: self.num_timesteps_cond] = ids
 
     def q_sample(self, x_start, t, noise=None):
-        noise = default(noise, lambda: ops.randn_like(x_start))
+        noise = default(noise, lambda: mint.randn_like(x_start))
         if self.use_scale:
             return (
                 extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape)
@@ -575,7 +575,7 @@ class LatentDiffusion(DDPM):
     def encode_first_stage_2DAE(self, x):
 
         b, _, t, _, _ = x.shape
-        results = ops.cat(
+        results = mint.cat(
             [
                 self.get_first_stage_encoding(self.first_stage_model.encode(x[:, :, i]))
                 .detach()
@@ -634,7 +634,7 @@ class LatentDiffusion(DDPM):
             denoise_row.append(self.decode_first_stage(zd.to(self.device)))
         n_log_timesteps = len(denoise_row)
 
-        denoise_row = ops.stack(denoise_row)  # n_log_timesteps, b, C, H, W
+        denoise_row = mint.stack(denoise_row)  # n_log_timesteps, b, C, H, W
 
         if denoise_row.dim() == 5:
             # img, num_imgs= n_log_timesteps * bs, grid_size=[bs,n_log_timesteps]
@@ -657,7 +657,7 @@ class LatentDiffusion(DDPM):
 
         b, _, t, _, _ = z.shape
         z = 1.0 / self.scale_factor * z
-        results = ops.cat(
+        results = mint.cat(
             [
                 self.first_stage_model.decode(z[:, :, i], **kwargs).unsqueeze(2)
                 for i in range(t)
@@ -738,7 +738,7 @@ class LatentDiffusion(DDPM):
 
         noise = noise_like(x.shape, device, repeat_noise) * temperature
         if noise_dropout > 0.0:
-            noise = ops.dropout(noise, p=noise_dropout)
+            noise = mint.dropout(noise, p=noise_dropout)
         # no noise when t == 0
         nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
 
@@ -797,7 +797,7 @@ class LatentDiffusion(DDPM):
             if self.shorten_cond_schedule:
                 assert self.model.conditioning_key != "hybrid"
                 tc = self.cond_ids[ts]
-                cond = self.q_sample(x_start=cond, t=tc, noise=ops.randn_like(cond))
+                cond = self.q_sample(x_start=cond, t=tc, noise=mint.randn_like(cond))
 
             img = self.p_sample(
                 img, cond, ts, clip_denoised=self.clip_denoised, **kwargs
@@ -893,15 +893,15 @@ class DiffusionWrapper(nn.Cell):
         if self.conditioning_key is None:
             out = self.diffusion_model(x, t)
         elif self.conditioning_key == "concat":
-            xc = ops.cat([x] + c_concat, dim=1)
+            xc = mint.cat([x] + c_concat, dim=1)
             out = self.diffusion_model(xc, t, **kwargs)
         elif self.conditioning_key == "crossattn":
-            cc = ops.cat(c_crossattn, 1)
+            cc = mint.cat(c_crossattn, 1)
             out = self.diffusion_model(x, t, context=cc, **kwargs)
         elif self.conditioning_key == "hybrid":
             ## it is just right [b,c,t,h,w]: concatenate in channel dim
-            xc = ops.cat([x] + c_concat, dim=1)
-            cc = ops.cat(c_crossattn, 1)
+            xc = mint.cat([x] + c_concat, dim=1)
+            cc = mint.cat(c_crossattn, 1)
             out = self.diffusion_model(xc, t, context=cc)
         elif self.conditioning_key == "resblockcond":
             cc = c_crossattn[0]
@@ -911,31 +911,31 @@ class DiffusionWrapper(nn.Cell):
             out = self.diffusion_model(x, t, y=cc)
         elif self.conditioning_key == "hybrid-adm":
             assert c_adm is not None
-            xc = ops.cat([x] + c_concat, dim=1)
-            cc = ops.cat(c_crossattn, 1)
+            xc = mint.cat([x] + c_concat, dim=1)
+            cc = mint.cat(c_crossattn, 1)
             out = self.diffusion_model(xc, t, context=cc, y=c_adm)
         elif self.conditioning_key == "hybrid-time":
             assert s is not None
-            xc = ops.cat([x] + c_concat, dim=1)
-            cc = ops.cat(c_crossattn, 1)
+            xc = mint.cat([x] + c_concat, dim=1)
+            cc = mint.cat(c_crossattn, 1)
             out = self.diffusion_model(xc, t, context=cc, s=s)
         elif self.conditioning_key == "concat-time-mask":
             # assert s is not None
             # mainlogger.info('x & mask:',x.shape,c_concat[0].shape)
-            xc = ops.cat([x] + c_concat, dim=1)
+            xc = mint.cat([x] + c_concat, dim=1)
             out = self.diffusion_model(xc, t, context=None, s=s, mask=mask)
         elif self.conditioning_key == "concat-adm-mask":
             # assert s is not None
             # mainlogger.info('x & mask:',x.shape,c_concat[0].shape)
             if c_concat is not None:
-                xc = ops.cat([x] + c_concat, dim=1)
+                xc = mint.cat([x] + c_concat, dim=1)
             else:
                 xc = x
             out = self.diffusion_model(xc, t, context=None, y=s, mask=mask)
         elif self.conditioning_key == "hybrid-adm-mask":
-            cc = ops.cat(c_crossattn, 1)
+            cc = mint.cat(c_crossattn, 1)
             if c_concat is not None:
-                xc = ops.cat([x] + c_concat, dim=1)
+                xc = mint.cat([x] + c_concat, dim=1)
             else:
                 xc = x
             out = self.diffusion_model(xc, t, context=cc, y=s, mask=mask)
@@ -944,8 +944,8 @@ class DiffusionWrapper(nn.Cell):
         ):  # adm means y, e.g., class index
             # assert s is not None
             assert c_adm is not None
-            xc = ops.cat([x] + c_concat, dim=1)
-            cc = ops.cat(c_crossattn, 1)
+            xc = mint.cat([x] + c_concat, dim=1)
+            cc = mint.cat(c_crossattn, 1)
             out = self.diffusion_model(xc, t, context=cc, s=s, y=c_adm)
         else:
             raise NotImplementedError()
