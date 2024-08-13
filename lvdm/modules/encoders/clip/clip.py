@@ -77,7 +77,7 @@ class CLIPModel(nn.Cell):
             )
         )
         self.logit_scale = Parameter(Tensor(np.log(1 / 0.07), self.dtype))
-        self.exp = mint.exp()
+        self.exp = mint.exp
 
         self.load_checkpoint(config)
 

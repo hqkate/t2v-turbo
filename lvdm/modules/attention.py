@@ -165,7 +165,7 @@ class CrossAttention(nn.Cell):
             sim = sim.masked_fill(~(mask > 0.5), max_neg_value)
 
         # attention, what we cannot get enough of
-        sim = mint.nn.functional.softmax(sim, axis=-1)
+        sim = mint.nn.functional.softmax(sim, dim=-1)
         # out = einsum("b i j, b j d -> b i d", sim, v)
         out = mint.matmul(sim, v)
 
@@ -187,7 +187,7 @@ class CrossAttention(nn.Cell):
             v_ip = self._rearrange_in(v_ip, h)
             # sim_ip = einsum("b i d, b j d -> b i j", q, k_ip) * self.scale
             sim_ip = mint.matmul(q, ops.transpose(k_ip, (0, 2, 1))) * self.scale
-            sim_ip = sim_ip.softmax(axis=-1)
+            sim_ip = mint.nn.functional.softmax(sim_ip, dim=-1)
             # out_ip = einsum("b i j, b j d -> b i d", sim_ip, v_ip)
             out_ip = mint.matmul(sim_ip, v_ip)
             # out_ip = rearrange(out_ip, "(b h) n d -> b n (h d)", h=h)
@@ -643,7 +643,7 @@ class SpatialSelfAttention(nn.Cell):
         w_ = mint.matmul(q, k) # TODO: check!
 
         w_ = w_ * (int(c) ** (-0.5))
-        w_ = mint.nn.functional.softmax(w_, axis=2)
+        w_ = mint.nn.functional.softmax(w_, dim=2)
 
         # attend to values
         # v = rearrange(v, "b c h w -> b c (h w)")

@@ -1,5 +1,5 @@
 import mindspore as ms
-from mindspore import nn, ops, _no_grad
+from mindspore import nn, ops
 
 
 class LitEma(nn.Cell):
@@ -32,7 +32,7 @@ class LitEma(nn.Cell):
 
         one_minus_decay = 1.0 - decay
 
-        # with _no_grad()
+        # with ms._no_grad()
         m_param = dict(model.named_parameters())
         shadow_params = dict(self.named_buffers())
 
