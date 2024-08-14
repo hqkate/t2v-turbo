@@ -447,9 +447,9 @@ def inject_trainable_lora_extended(
                 _child_module.bias is not None,
                 r=r,
             )
-            _tmp.linear.weight.set_data(weight)
+            _tmp.linear.weight.set_data(weight.astype(_tmp.linear.weight.dtype))
             if bias is not None:
-                _tmp.linear.bias.set_data(bias)
+                _tmp.linear.bias.set_data(bias.astype(_tmp.linear.bias.dtype))
         elif _child_module.__class__ == nn.Conv2d:
             weight = _child_module.weight
             bias = _child_module.bias
@@ -465,9 +465,9 @@ def inject_trainable_lora_extended(
                 r=r,
             )
 
-            _tmp.conv.weight.set_data(weight)
+            _tmp.conv.weight.set_data(weight.astype(_tmp.conv.weight.dtype))
             if bias is not None:
-                _tmp.conv.bias.set_data(bias)
+                _tmp.conv.bias.set_data(bias.astype(_tmp.conv.bias.dtype))
 
         elif _child_module.__class__ == nn.Conv3d:
             weight = _child_module.weight
@@ -481,9 +481,9 @@ def inject_trainable_lora_extended(
                 r=r,
             )
 
-            _tmp.conv.weight.set_data(weight)
+            _tmp.conv.weight.set_data(weight.astype(_tmp.conv.weight.dtype))
             if bias is not None:
-                _tmp.conv.bias.set_data(bias)
+                _tmp.conv.bias.set_data(bias.astype(_tmp.conv.bias.dtype))
         else:
             # ignore module which are not included in search_class
             # For example:

@@ -32,7 +32,7 @@ from gm.modules.embedders.open_clip.tokenizer import tokenize
 
 logger = logging.getLogger(__name__)
 MODEL_URL = "https://weights.replicate.delivery/default/Ji4chenLi/t2v-turbo.tar"
-MODEL_CACHE = "checkpoints"
+MODEL_CACHE = "checkpoints/t2v-vc2/"
 
 
 def download_weights(url, dest):
@@ -76,19 +76,17 @@ def main(args):
     #     download_weights(MODEL_URL, MODEL_CACHE)
 
     base_model_dir = os.path.join(MODEL_CACHE, "t2v_VC2.ckpt")
-    unet_dir = os.path.join(MODEL_CACHE, "unet_lora.pt")
+    unet_dir = os.path.join(MODEL_CACHE, "unet_lora_vc2.pt")
 
     config = OmegaConf.load(args.config)
     model_config = config.pop("model", OmegaConf.create())
     pretrained_t2v = instantiate_from_config(model_config)
     pretrained_t2v = load_model_checkpoint(pretrained_t2v, base_model_dir)
-    pretrained_t2v.to_float(dtype)
 
     unet_config = model_config["params"]["unet_config"]
     unet_config["params"]["time_cond_proj_dim"] = 256
     unet = instantiate_from_config(unet_config)
     ms.load_param_into_net(unet, pretrained_t2v.model.diffusion_model.parameters_dict(), False)
-    unet.to_float(dtype)
 
     use_unet_lora = True
     lora_manager = LoraHandler(
@@ -109,9 +107,18 @@ def main(args):
     collapse_lora(unet, lora_manager.unet_replace_modules)
     monkeypatch_remove_lora(unet)
 
-    pretrained_t2v.model.diffusion_model = unet
+    if args.dtype != "fp32":
+        unet_config["params"]["dtype"] = args.dtype
+        new_unet = instantiate_from_config(unet_config)
+        ms.load_param_into_net(new_unet, unet.parameters_dict(), False)
+        pretrained_t2v.model.diffusion_model = new_unet
+        del unet, new_unet
+
+    else:
+        pretrained_t2v.model.diffusion_model = unet
+        del unet
+
     pretrained_t2v.set_train(False)
-    pretrained_t2v.to_float(dtype)
 
     # 2.1 amp
     if args.dtype not in ["fp32", "bf16"]:
@@ -133,7 +140,6 @@ def main(args):
         linear_end=model_config["params"]["linear_end"],
     )
     pipeline = T2VTurboVC2Pipeline(pretrained_t2v, scheduler, model_config)
-    pipeline.to(dtype)
 
     # 3. inference
     generator = np.random.Generator(np.random.PCG64(args.seed))

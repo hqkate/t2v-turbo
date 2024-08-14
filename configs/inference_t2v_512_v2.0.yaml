@@ -48,6 +48,7 @@ model:
         temporal_length: 16
         addition_attention: true
         fps_cond: true
+        dtype: fp32
     first_stage_config:
       target: lvdm.models.autoencoder.AutoencoderKL
       params:

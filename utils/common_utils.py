@@ -383,6 +383,6 @@ def load_model_checkpoint(model, ckpt):
         gc.collect()
         return model
 
-    load_checkpoint(model, ckpt, full_strict=True)
+    load_checkpoint(model, ckpt, full_strict=False)
     print(">>> model checkpoint loaded.")
     return model

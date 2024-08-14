@@ -273,25 +273,25 @@ class TemporalConvBlock(nn.Cell):
         self.conv1 = nn.SequentialCell(
             GroupNormExtend(32, in_channels),
             nn.SiLU(),
-            nn.Conv3d(in_channels, out_channels, kernel_shape, padding=padding_shape, pad_mode="pad", has_bias=True, dtype=dtype),
+            nn.Conv3d(in_channels, out_channels, kernel_shape, padding=padding_shape, pad_mode="pad", has_bias=True, dtype=dtype).to_float(dtype),
         )
         self.conv2 = nn.SequentialCell(
             GroupNormExtend(32, out_channels),
             nn.SiLU(),
             nn.Dropout(p=dropout),
-            nn.Conv3d(out_channels, in_channels, kernel_shape, padding=padding_shape, pad_mode="pad", has_bias=True, dtype=dtype),
+            nn.Conv3d(out_channels, in_channels, kernel_shape, padding=padding_shape, pad_mode="pad", has_bias=True, dtype=dtype).to_float(dtype),
         )
         self.conv3 = nn.SequentialCell(
             GroupNormExtend(32, out_channels),
             nn.SiLU(),
             nn.Dropout(p=dropout),
-            nn.Conv3d(out_channels, in_channels, (3, 1, 1), padding=(1, 1, 0, 0, 0, 0), pad_mode="pad", has_bias=True, dtype=dtype),
+            nn.Conv3d(out_channels, in_channels, (3, 1, 1), padding=(1, 1, 0, 0, 0, 0), pad_mode="pad", has_bias=True, dtype=dtype).to_float(dtype),
         )
         self.conv4 = nn.SequentialCell(
             GroupNormExtend(32, out_channels),
             nn.SiLU(),
             nn.Dropout(p=dropout),
-            nn.Conv3d(out_channels, in_channels, (3, 1, 1), padding=(1, 1, 0, 0, 0, 0), pad_mode="pad", has_bias=True, dtype=dtype),
+            nn.Conv3d(out_channels, in_channels, (3, 1, 1), padding=(1, 1, 0, 0, 0, 0), pad_mode="pad", has_bias=True, dtype=dtype).to_float(dtype),
         )
 
         # zero out the last layer params,so the conv block is identity
@@ -365,12 +365,12 @@ class UNetModel(nn.Cell):
         use_relative_position=True,
         use_causal_attention=False,
         temporal_length=None,
-        use_fp16=False,
         addition_attention=False,
         use_image_attention=False,
         temporal_transformer_depth=1,
         fps_cond=False,
         time_cond_proj_dim=None,
+        dtype="fp32",
     ):
         super(UNetModel, self).__init__()
         if num_heads == -1:
@@ -393,11 +393,11 @@ class UNetModel(nn.Cell):
         self.temporal_attention = temporal_attention
         time_embed_dim = model_channels * 4
         self.use_checkpoint = use_checkpoint
-        self.dtype = ms.float16 if use_fp16 else ms.float32
         self.addition_attention = addition_attention
         self.use_image_attention = use_image_attention
         self.fps_cond = fps_cond
         self.time_cond_proj_dim = time_cond_proj_dim
+        self.dtype = {"fp32": ms.float32, "fp16": ms.float16, "bf16": ms.bfloat16}[dtype]
 
         self.time_embed = nn.SequentialCell(
             linear(model_channels, time_embed_dim),
@@ -677,7 +677,7 @@ class UNetModel(nn.Cell):
         timestep_cond=None,
         **kwargs
     ):
-        t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False, dtype=self.dtype)
+        t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)
         if timestep_cond is not None:
             t_emb = t_emb + self.time_cond_proj(timestep_cond)
         emb = self.time_embed(t_emb)
@@ -685,7 +685,7 @@ class UNetModel(nn.Cell):
         if self.fps_cond:
             if type(fps) == int:
                 fps = ops.full_like(timesteps, fps)
-            fps_emb = timestep_embedding(fps, self.model_channels, repeat_only=False, dtype=self.dtype)
+            fps_emb = timestep_embedding(fps, self.model_channels, repeat_only=False)
             emb += self.fps_embedding(fps_emb)
 
         b, _, t, _, _ = x.shape
@@ -697,7 +697,7 @@ class UNetModel(nn.Cell):
         # x = rearrange(x, "b c t h w -> (b t) c h w")
         x = rearrange_out_gn5d(x)
 
-        h = x.astype(self.dtype)
+        h = x
         adapter_idx = 0
         hs = []
         for id, module in enumerate(self.input_blocks):

@@ -7,6 +7,7 @@
 #
 # thanks!
 
+import mindspore as ms
 from mindspore import nn, ops
 from utils.utils import instantiate_from_config
 
@@ -40,11 +41,14 @@ def conv_nd(dims, *args, **kwargs):
     Create a 1D, 2D, or 3D convolution module.
     """
     if dims == 1:
+        dtype = kwargs.pop["dtype"]
         return nn.Conv1d(*args, **kwargs)
     elif dims == 2:
+        dtype = kwargs.pop["dtype"]
         return nn.Conv2d(*args, **kwargs)
     elif dims == 3:
-        return nn.Conv3d(*args, **kwargs)
+        dtype = kwargs.get("dtype", ms.float32)
+        return nn.Conv3d(*args, **kwargs).to_float(dtype)
     raise ValueError(f"unsupported dimensions: {dims}")
 
 
