@@ -316,7 +316,7 @@ def update_ema(target_params, source_params, rate=0.99):
         targ.detach().mul_(rate).add_(src, alpha=1 - rate)
 
 
-def log_validation_video(pipeline, args, accelerator, save_fps):
+def log_validation_video(pipeline, args, trackers, save_fps):
     if args.seed is None:
         generator = None
     else:
@@ -336,19 +336,18 @@ def log_validation_video(pipeline, args, accelerator, save_fps):
     video_logs = []
 
     for _, prompt in enumerate(validation_prompts):
-        with torch.autocast("cuda"):
-            videos = pipeline(
-                prompt=prompt,
-                frames=args.n_frames,
-                num_inference_steps=4,
-                num_videos_per_prompt=2,
-                generator=generator,
-            )
-            videos = (videos.clamp(-1.0, 1.0) + 1.0) / 2.0
-            videos = (videos * 255).to(ms.uint8).permute(0, 2, 1, 3, 4).cpu().numpy()
+        videos = pipeline(
+            prompt=prompt,
+            frames=args.n_frames,
+            num_inference_steps=4,
+            num_videos_per_prompt=2,
+            generator=generator,
+        )
+        videos = (videos.clamp(-1.0, 1.0) + 1.0) / 2.0
+        videos = (videos * 255).to(ms.uint8).permute(0, 2, 1, 3, 4).cpu().numpy()
         video_logs.append({"validation_prompt": prompt, "videos": videos})
 
-    for tracker in accelerator.trackers:
+    for tracker in trackers:
         if tracker.name == "wandb":
             formatted_videos = []
             for log in video_logs:

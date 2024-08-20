@@ -30,21 +30,29 @@ from omegaconf import OmegaConf
 import mindspore as ms
 from mindspore import ops, mint, nn
 from mindspore.amp import StaticLossScaler
-from packaging import version
 
 from tqdm.auto import tqdm
-from webdataset import WebLoader
 
 from mindone.diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 from mindone.diffusers.optimization import get_scheduler
 from mindone.diffusers.utils import check_min_version, is_wandb_available
-from mindone.diffusers.training_utils import set_seed, is_master, init_distributed_device, TrainStep, AttrJitWrapper
+from mindone.diffusers.training_utils import (
+    set_seed,
+    is_master,
+    TrainStep,
+    cast_training_params,
+)
+from mindone.diffusers.utils import convert_state_dict_to_diffusers, convert_unet_state_dict_to_peft
+from mindone.diffusers.loaders import LoraLoaderMixin
+from mindone.diffusers._peft.utils import get_peft_model_state_dict, set_peft_model_state_dict
 from mindone.diffusers._peft.tuners.tuners_utils import BaseTunerLayer
 from mindone.utils.logger import set_logger
-from data.dataset import get_video_dataset
+from mindone.utils.config import str2bool
+
+from data.dataset import create_dataloader
+from utils.env import init_env
 from utils.lora import save_lora_weight
 from utils.lora_handler import LoraHandler
-
 from ode_solver import DDIMSolver
 from reward_fn import get_reward_fn
 from scheduler.t2v_turbo_scheduler import T2VTurboScheduler
@@ -77,13 +85,17 @@ check_min_version("0.26.0.dev0")
 logger = logging.getLogger(__name__)
 
 
-def log_validation(pretrained_t2v, unet, scheduler, model_config, args, accelerator):
+def _to_abspath(rp):
+    __dir__ = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(__dir__, rp)
+
+
+def log_validation(pretrained_t2v, unet, scheduler, model_config, args, trackers):
     logger.info("Running validation... ")
     pretrained_t2v.model.diffusion_model = unet
     pipeline = T2VTurboVC2Pipeline(pretrained_t2v, scheduler, model_config)
-    pipeline = pipeline.to(accelerator.device)
 
-    log_validation_video(pipeline, args, accelerator, save_fps=16)
+    log_validation_video(pipeline, args, trackers, save_fps=16)
     gc.collect()
 
 
@@ -101,6 +113,32 @@ def parse_args():
         type=str,
         default="PATH_TO_VC2_model.pt",
         help="Path to the pretrained model.",
+    )
+    # ----------MS environment args----------
+    parser.add_argument(
+        "--device_target", type=str, default="Ascend", help="Ascend or GPU"
+    )
+    parser.add_argument(
+        "--mode",
+        type=int,
+        default=0,
+        help="Running in GRAPH_MODE(0) or PYNATIVE_MODE(1) (default=0)",
+    )
+    parser.add_argument(
+        "--use_parallel", default=False, type=str2bool, help="use parallel"
+    )
+    parser.add_argument(
+        "--debug", type=str2bool, default=False, help="Execute inference in debug mode."
+    )
+    parser.add_argument(
+        "--jit_level",
+        default="O0",
+        type=str,
+        choices=["O0", "O1", "O2"],
+        help="Used to control the compilation optimization level. Supports [“O0”, “O1”, “O2”]."
+        "O0: Except for optimizations that may affect functionality, all other optimizations are turned off, adopt KernelByKernel execution mode."
+        "O1: Using commonly used optimizations and automatic operator fusion optimizations, adopt KernelByKernel execution mode."
+        "O2: Ultimate performance optimization, adopt Sink execution mode.",
     )
     # ----------Training Arguments----------
     # ----General Training Arguments----
@@ -173,6 +211,13 @@ def parse_args():
             " dataset). It can also be a path pointing to a local copy of a dataset in your filesystem,"
             " or to a folder containing files that 🤗 Datasets can understand."
         ),
+    )
+    parser.add_argument("--data_path", default="dataset", type=str, help="path to video root folder")
+    parser.add_argument(
+        "--csv_path",
+        default=None,
+        type=str,
+        help="path to csv annotation file. If None, video_caption.csv is expected to live under `data_path`",
     )
     # ----Dataloader----
     parser.add_argument(
@@ -447,6 +492,12 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--global_bf16",
+        default=False,
+        type=str2bool,
+        help="Experimental. If True, dtype will be overrided, operators will be computered in bf16 if they are supported by CANN",
+    )
+    parser.add_argument(
         "--allow_tf32",
         action="store_true",
         help=(
@@ -558,7 +609,15 @@ def compute_embeddings(prompt_batch, text_encoder, is_train=True):
 def main(args):
     args = parse_args()
     ms.set_context(mode=args.mode, jit_syntax_level=ms.STRICT)
-    init_distributed_device(args)  # read attr distributed, writer attrs rank/local_rank/world_size
+    rank_id, device_num = init_env(
+        args.mode,
+        args.seed,
+        args.use_parallel,
+        device_target=args.device_target,
+        jit_level=args.jit_level,
+        global_bf16=args.global_bf16,
+        debug=args.debug,
+    )
 
     logging_dir = Path(args.output_dir, args.logging_dir)
     set_logger(name="", output_dir=logging_dir)
@@ -593,10 +652,6 @@ def main(args):
     teacher_unet = pretrained_t2v.model.diffusion_model
 
     # 6. Freeze teacher vae, text_encoder, and teacher_unet
-    # vae.requires_grad_(False)
-    # text_encoder.requires_grad_(False)
-    # teacher_unet.requires_grad_(False)
-
     def freeze_params(m: nn.Cell):
         for p in m.get_parameters():
             p.requires_grad = False
@@ -730,9 +785,15 @@ def main(args):
 
         lora_state_dict, network_alphas = LoraLoaderMixin.lora_state_dict(input_dir)
 
-        unet_state_dict = {f'{k.replace("unet.", "")}': v for k, v in lora_state_dict.items() if k.startswith("unet.")}
+        unet_state_dict = {
+            f'{k.replace("unet.", "")}': v
+            for k, v in lora_state_dict.items()
+            if k.startswith("unet.")
+        }
         unet_state_dict = convert_unet_state_dict_to_peft(unet_state_dict)
-        incompatible_keys = set_peft_model_state_dict(unet_, unet_state_dict, adapter_name="default")
+        incompatible_keys = set_peft_model_state_dict(
+            unet_, unet_state_dict, adapter_name="default"
+        )
         if incompatible_keys is not None:
             # check only for unexpected keys
             unexpected_keys = getattr(incompatible_keys, "unexpected_keys", None)
@@ -800,25 +861,48 @@ def main(args):
     # Here, we compute not just the text embeddings but also the additional embeddings
     # needed for the SD XL UNet to operate.
 
-    decoder_kwargs = {
-        "n_frames": args.n_frames,  # get 16 frames from each video
-        "fps": 16,
-        "num_threads": 12,  # use 16 threads to decode the video
-    }
-    resolution = tuple([s * 8 for s in model_config["params"]["image_size"]])
-    dataset = get_video_dataset(
-        urls=args.train_shards_path_or_url,
-        batch_size=args.train_batch_size,
-        shuffle=1000,
-        decoder_kwargs=decoder_kwargs,
-        resize_size=resolution,
-        crop_size=resolution,
-    )
+    # decoder_kwargs = {
+    #     "n_frames": args.n_frames,  # get 16 frames from each video
+    #     "fps": 16,
+    #     "num_threads": 12,  # use 16 threads to decode the video
+    # }
+    # resolution = tuple([s * 8 for s in model_config["params"]["image_size"]])
+    # dataset = get_video_dataset(
+    #     urls=args.train_shards_path_or_url,
+    #     batch_size=args.train_batch_size,
+    #     shuffle=1000,
+    #     decoder_kwargs=decoder_kwargs,
+    #     resize_size=resolution,
+    #     crop_size=resolution,
+    # )
     num_workers = args.dataloader_num_workers
-    train_dataloader = WebLoader(dataset, batch_size=None, num_workers=num_workers)
+    # train_dataloader = WebLoader(dataset, batch_size=None, num_workers=num_workers)
+
+    csv_path = args.csv_path if args.csv_path is not None else os.path.join(args.data_path, "video_caption.csv")
+    data_config = dict(
+        video_folder=_to_abspath(args.data_path),
+        csv_path=_to_abspath(csv_path),
+        sample_size=args.image_size,
+        sample_stride=args.frame_stride,
+        sample_n_frames=args.num_frames,
+        batch_size=args.train_batch_size,
+        shuffle=True,
+        num_parallel_workers=args.dataloader_num_workers,
+        max_rowsize=64,
+        random_drop_text=args.random_drop_text,
+        random_drop_text_ratio=args.random_drop_text_ratio,
+        video_column=args.video_column,
+        caption_column=args.caption_column,
+        train_data_type=args.train_data_type,
+        disable_flip=args.disable_flip,
+    )
+
+    train_dataloader = create_dataloader(
+        data_config, is_image=False, device_num=device_num, rank_id=rank_id
+    )
 
     num_train_examples = args.max_train_samples
-    global_batch_size = args.train_batch_size * args.world_size
+    global_batch_size = args.train_batch_size * device_num
     num_worker_batches = math.ceil(
         num_train_examples / (global_batch_size * num_workers)
     )
@@ -874,7 +958,9 @@ def main(args):
         if tracker_name == "tensorboard":
             from tensorboardX import SummaryWriter
 
-            trackers[tracker_name] = SummaryWriter(str(logging_dir), write_to_disk=is_master(args))
+            trackers[tracker_name] = SummaryWriter(
+                str(logging_dir), write_to_disk=is_master(args)
+            )
         else:
             logger.warning(f"Tracker {tracker_name} is not implemented, omitting...")
 
@@ -903,9 +989,7 @@ def main(args):
 
     # 16. Train!
     total_batch_size = (
-        args.train_batch_size
-        * args.world_size
-        * args.gradient_accumulation_steps
+        args.train_batch_size * device_num * args.gradient_accumulation_steps
     )
 
     logger.info("***** Running training *****")
@@ -936,11 +1020,11 @@ def main(args):
         unet.set_train(True)
         for step, batch in enumerate(train_dataloader):
 
-            loss = train_step(*batch)
-            
+            loss, distill_loss, reward_loss, video_rm_loss = train_step(*batch)
+
         # 11. Backpropagate on the online student model (`unet`)
-        if accelerator.sync_gradients:
-            accelerator.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
+        # if accelerator.sync_gradients: # TODO!!!
+        #     accelerator.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
 
         # Checks if the accelerator has performed an optimization step behind the scenes
         if train_step.sync_gradients:
@@ -1001,7 +1085,7 @@ def main(args):
                         noise_scheduler,
                         model_config,
                         args,
-                        accelerator,
+                        trackers,
                     )
 
             # Gather losses from all processes
@@ -1011,28 +1095,17 @@ def main(args):
             #     video_rm_loss.detach().float()
             # )
 
-            # if is_master(args):
-            #     distill_loss = distill_loss_list.sum() / len(args.vlcd_processes)
-            #     reward_loss = (
-            #         reward_loss_list.sum()
-            #         / len(args.reward_train_processes)
-            #         / args.reward_scale
-            #     )
-            #     video_rm_loss = (
-            #         video_rm_loss_list.sum()
-            #         / len(args.video_rm_train_processes)
-            #         / args.video_reward_scale
-            #     )
-            #     logs = {
-            #         "distillation loss": distill_loss.detach().item(),
-            #         "image reward loss": reward_loss.detach().item(),
-            #         "video reward loss": video_rm_loss.detach().item(),
-            #         "lr": lr_scheduler.get_last_lr()[0],
-            #     }
-            #     progress_bar.set_postfix(**logs)
-            #     accelerator.log(logs, step=global_step)
-            #     del distill_loss, reward_loss, video_rm_loss
-            #     gc.collect()
+            if is_master(args):
+                logs = {
+                    "distillation loss": distill_loss,
+                    "image reward loss": reward_loss,
+                    "video reward loss": video_rm_loss,
+                    "lr": lr_scheduler.get_last_lr()[0],
+                }
+                progress_bar.set_postfix(**logs)
+                logger.info(logs, step=global_step)
+                del distill_loss, reward_loss, video_rm_loss
+                gc.collect()
 
         if global_step >= args.max_train_steps:
             break
@@ -1070,7 +1143,9 @@ class TrainStepForTurbo(TrainStep):
             StaticLossScaler(65536),
             args.max_grad_norm,
             args.gradient_accumulation_steps,
-            gradient_accumulation_kwargs=dict(length_of_dataloader=length_of_dataloader),
+            gradient_accumulation_kwargs=dict(
+                length_of_dataloader=length_of_dataloader
+            ),
         )
         self.unet = unet
         self.unet_in_channels = unet.config.in_channels
@@ -1086,7 +1161,9 @@ class TrainStepForTurbo(TrainStep):
         self.noise_scheduler = noise_scheduler
         self.alpha_schedule = alpha_schedule
         self.sigma_schedule = sigma_schedule
-        self.noise_scheduler_num_train_timesteps = noise_scheduler.config.num_train_timesteps
+        self.noise_scheduler_num_train_timesteps = (
+            noise_scheduler.config.num_train_timesteps
+        )
         self.noise_scheduler_prediction_type = noise_scheduler.config.prediction_type
         self.weight_dtype = weight_dtype
         self.vae_scale_factor = vae_scale_factor
@@ -1102,16 +1179,15 @@ class TrainStepForTurbo(TrainStep):
         self.reward_fn = reward_fn
         self.video_rm_fn = video_rm_fn
 
-    def forward(self, mp4, txt):
-        
-        # 1. Load and process the image and text conditioning
-        video = mp4
-        video = ((video / 255.0).clamp(0.0, 1.0) - 0.5) / 0.5
+    def forward(self, pixel_values, text):
 
-        text = txt
+        # 1. Load and process the image and text conditioning
+        # video = ((video / 255.0).clamp(0.0, 1.0) - 0.5) / 0.5
+
         # Convert video from (b, t, h, w, c) to (b, t, c, h, w)
-        video = video.permute(0, 1, 4, 2, 3)
-        pixel_values = video.to(dtype=self.weight_dtype)
+        # video = video.permute(0, 1, 4, 2, 3) # FIXME!!!
+        # pixel_values = video.to(dtype=self.weight_dtype)
+        pixel_values = pixel_values.to(dtype=self.weight_dtype)
         b, t = pixel_values.shape[:2]
         pixel_values_flatten = pixel_values.view(b * t, *pixel_values.shape[2:])
         # encode pixel values with batch size of at most args.vae_encode_batch_size
@@ -1137,13 +1213,10 @@ class TrainStepForTurbo(TrainStep):
 
         # 2. Sample a random timestep for each image t_n from the ODE solver timesteps without bias.
         # For the DDIM solver, the timestep schedule is [T - 1, T - k - 1, T - 2 * k - 1, ...]
-        index = ops.randint(
-            0, args.num_ddim_timesteps, (bsz,))
+        index = ops.randint(0, args.num_ddim_timesteps, (bsz,))
         start_timesteps = self.solver.ddim_timesteps[index]
         timesteps = start_timesteps - args.topk
-        timesteps = mint.where(
-            timesteps < 0, mint.zeros_like(timesteps), timesteps
-        )
+        timesteps = mint.where(timesteps < 0, mint.zeros_like(timesteps), timesteps)
 
         # 3. Get boundary scalings for start_timesteps and (end) timesteps.
         c_skip_start, c_out_start = scalings_for_boundary_conditions(
@@ -1166,9 +1239,7 @@ class TrainStepForTurbo(TrainStep):
 
         # 5. Sample a random guidance scale w from U[w_min, w_max] and embed it
         w = (args.w_max - args.w_min) * mint.rand((bsz,)) + args.w_min
-        w_embedding = guidance_scale_embedding(
-            w, embedding_dim=self.time_cond_proj_dim
-        )
+        w_embedding = guidance_scale_embedding(w, embedding_dim=self.time_cond_proj_dim)
         w = w.reshape(bsz, 1, 1, 1, 1)
         # Move to U-Net device and dtype
         w = w.to(dtype=latents.dtype)
@@ -1230,9 +1301,7 @@ class TrainStepForTurbo(TrainStep):
 
             skip_frames = t // args.video_rm_batch_size
             start_id = ops.randint(0, skip_frames, (1,))[0].item()
-            idx = mint.arange(start_id, t, skip_frames)[
-                : args.video_rm_batch_size
-            ]
+            idx = mint.arange(start_id, t, skip_frames)[: args.video_rm_batch_size]
             assert len(idx) == args.video_rm_batch_size
 
             selected_latents = (
@@ -1251,9 +1320,7 @@ class TrainStepForTurbo(TrainStep):
                 *decoded_imgs.shape[1:],
             )
             video_rewards = self.video_rm_fn(decoded_imgs, text)
-            video_rm_loss = (
-                -video_rewards.mean() * args.video_reward_scale
-            )
+            video_rm_loss = -video_rewards.mean() * args.video_reward_scale
         # if accelerator.process_index in args.vlcd_processes:
         # 8. Compute the conditional and unconditional teacher model predictions to get CFG estimates of the
         # predicted noise eps_0 and predicted original sample x_0, then run the ODE solver using these
@@ -1309,9 +1376,7 @@ class TrainStepForTurbo(TrainStep):
             # 8.3. Calculate the CFG estimate of x_0 (pred_x0) and eps_0 (pred_noise)
             # Note that this uses the LCM paper's CFG formulation rather than the Imagen CFG formulation
             pred_x0 = cond_pred_x0 + w * (cond_pred_x0 - uncond_pred_x0)
-            pred_noise = cond_pred_noise + w * (
-                cond_pred_noise - uncond_pred_noise
-            )
+            pred_noise = cond_pred_noise + w * (cond_pred_noise - uncond_pred_noise)
             # 8.4. Run one step of the ODE solver to estimate the next point x_prev on the
             # augmented PF-ODE trajectory (solving backward in time)
             # Note that the DDIM step depends on both the predicted x_0 and source noise eps_0.
@@ -1345,7 +1410,7 @@ class TrainStepForTurbo(TrainStep):
 
         # accelerator.backward(distill_loss + reward_loss + video_rm_loss)
         loss = distill_loss + reward_loss + video_rm_loss
-        return loss, model_pred
+        return loss, distill_loss, reward_loss, video_rm_loss
 
 
 if __name__ == "__main__":
